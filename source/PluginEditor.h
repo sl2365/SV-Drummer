@@ -29,6 +29,8 @@ private:
     void showSequencerView();
     void showPadSettings (int padIndex);
     void updateViewButtons();
+    int loadSavedZoomPercent() const;
+    void saveZoomSetting() const;
 
     SVDrummerAudioProcessor& processor;
     std::unique_ptr<SVDrummerLookAndFeel> lookAndFeel;
@@ -41,8 +43,14 @@ private:
     juce::TextButton sequencerViewButton { "SEQUENCER" };
     juce::TextButton settingsViewButton { "PAD SETTINGS" };
     bool showingSettings = false;
+    bool initialLayoutComplete = false;
+    bool zoomSavePending = false;
+    float uiScale = 1.0f;
+    float uiOffsetX = 0.0f;
+    float uiOffsetY = 0.0f;
     int selectedPad = 0;
     int portableSettingsTimerTicks = 0;
+    int zoomSaveTimerTicks = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SVDrummerAudioProcessorEditor)
 };

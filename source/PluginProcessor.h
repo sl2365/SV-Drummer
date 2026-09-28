@@ -14,9 +14,9 @@ public:
     static constexpr int numberOfPads = 16;
     static constexpr int numberOfPatterns = 16;
     static constexpr int voicesPerPad = 4;
-    static constexpr int sequencerDivisionCount = 7;
+    static constexpr int sequencerDivisionCount = 9;
     static constexpr int maximumPatternBars = 16;
-    static constexpr int maximumStepsPerBar = 48;
+    static constexpr int maximumStepsPerBar = 64;
     static constexpr int maximumStepsPerLane = maximumPatternBars * maximumStepsPerBar;
 
     struct SampleData
@@ -55,6 +55,7 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     juce::Result loadSampleIntoPad (int padIndex, const juce::File& file);
+    juce::Result previewSampleFile (const juce::File& file);
     void clearPadSample (int padIndex);
     std::shared_ptr<const SampleData> getPadSample (int padIndex) const;
 
@@ -72,6 +73,10 @@ public:
     void setPadPan (int padIndex, float pan);
     float getPadTuneSemitones (int padIndex) const;
     void setPadTuneSemitones (int padIndex, float semitones);
+    float getPadSampleStart (int padIndex) const;
+    void setPadSampleStart (int padIndex, float normalisedPosition);
+    float getPadSampleEnd (int padIndex) const;
+    void setPadSampleEnd (int padIndex, float normalisedPosition);
     juce::String getPadSamplePath (int padIndex) const;
     juce::String getPadDisplayName (int padIndex) const;
     std::uint64_t getPadActivityCounter (int padIndex) const;
@@ -80,6 +85,8 @@ public:
 
     bool isSequencerEnabled() const;
     void setSequencerEnabled (bool shouldBeEnabled);
+    bool isPatternMidiGateMode() const;
+    void setPatternMidiGateMode (bool shouldUseGateMode);
     int getPatternBars() const;
     void setPatternBars (int bars);
     int getLaneDivision (int laneIndex) const;
@@ -123,6 +130,8 @@ private:
         std::shared_ptr<const SampleData> sample;
         double position = 0.0;
         double increment = 1.0;
+        double rangeStart = 0.0;
+        double rangeEnd = 1.0;
         float velocity = 1.0f;
         int delaySamples = 0;
         std::uint64_t sampleRevision = 0;
@@ -138,7 +147,7 @@ private:
         }
 
         std::array<std::atomic<std::uint8_t>, maximumStepsPerLane> stepVelocities;
-        std::atomic<int> division { 3 };
+        std::atomic<int> division { 4 };
         std::atomic<int> loopLength { 16 };
         std::atomic<int> activeStep { -1 };
     };
@@ -152,6 +161,8 @@ private:
         std::atomic<float> volumeDb { 0.0f };
         std::atomic<float> pan { 0.0f };
         std::atomic<float> tuneSemitones { 0.0f };
+        std::atomic<float> sampleStart { 0.0f };
+        std::atomic<float> sampleEnd { 1.0f };
         std::shared_ptr<const SampleData> sample;
         std::array<Voice, voicesPerPad> voices;
         std::atomic<std::uint64_t> sampleRevision { 0 };
@@ -164,7 +175,7 @@ private:
     struct PatternLaneState
     {
         std::array<std::uint8_t, maximumStepsPerLane> stepVelocities {};
-        int division = 3;
+        int division = 4;
         int loopLength = 16;
     };
 
@@ -180,6 +191,8 @@ private:
         float volumeDb = 0.0f;
         float pan = 0.0f;
         float tuneSemitones = 0.0f;
+        float sampleStart = 0.0f;
+        float sampleEnd = 1.0f;
     };
 
     struct StoredPattern
@@ -192,10 +205,19 @@ private:
     };
 
     std::array<PadState, numberOfPads> pads;
+    std::shared_ptr<const SampleData> browserPreviewSample;
+    Voice browserPreviewVoice;
+    std::atomic<bool> browserPreviewTriggerPending { false };
     std::array<LaneSequenceState, numberOfPads> sequenceLanes;
     std::array<std::atomic<float>, numberOfPads> pendingInterfaceVelocities;
     std::atomic<std::uint32_t> pendingInterfaceTriggers { 0 };
     std::atomic<bool> sequencerEnabled { false };
+    std::atomic<bool> patternMidiGateMode { false };
+    std::atomic<bool> patternGateActive { false };
+    std::atomic<bool> patternGateWaitingForSelection { false };
+    std::atomic<int> activePatternGateNote { -1 };
+    std::atomic<int> pendingPatternGateStartNote { -1 };
+    std::atomic<std::uint64_t> patternGateRestartCounter { 0 };
     std::atomic<int> patternBars { 1 };
     std::atomic<double> sequencerPatternPositionQuarterNotes { 0.0 };
     std::array<StoredPattern, numberOfPatterns> storedPatterns;
@@ -208,6 +230,7 @@ private:
     double currentSampleRate = 44100.0;
     std::array<juce::int64, numberOfPads> lastSequenceAbsoluteSteps;
     std::uint64_t lastPatternChangeCounter = 0;
+    std::uint64_t lastPatternGateRestartCounter = 0;
     double fallbackSequencerPpq = 0.0;
     bool sequencerWasPlaying = false;
 
@@ -216,6 +239,8 @@ private:
     std::atomic<bool> portableSettingsDirty { false };
 
     void triggerPadOnAudioThread (int padIndex, float velocity, int delaySamples = 0);
+    void triggerBrowserPreviewOnAudioThread();
+    void renderBrowserPreview (juce::AudioBuffer<float>& output);
     void processSequencerTriggers (int numSamples);
     void resetSequencerTimeline();
     void renderPadVoices (int padIndex,

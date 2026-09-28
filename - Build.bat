@@ -30,7 +30,7 @@ set "BUNDLE_BINARY=%BUILD_DIR%\SVDrummer_artefacts\Release\VST3\SV-Drummer.vst3\
 set "FINAL_PLUGIN=%DIST_DIR%\SV-Drummer.vst3"
 
 echo.
-echo SV-Drummer 64-bit VST3 - Stage 3.1 Build
+echo SV-Drummer 64-bit VST3 - Stage 4.6 Build
 echo ========================================
 echo.
 
