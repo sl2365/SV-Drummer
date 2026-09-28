@@ -30,7 +30,7 @@ set "BUNDLE_BINARY=%BUILD_DIR%\SVDrummer_artefacts\Release\VST3\SV-Drummer.vst3\
 set "FINAL_PLUGIN=%DIST_DIR%\SV-Drummer.vst3"
 
 echo.
-echo SV-Drummer 64-bit VST3 - Stage 1.2 Build
+echo SV-Drummer 64-bit VST3 - Stage 3.1 Build
 echo ========================================
 echo.
 
@@ -97,7 +97,7 @@ if not exist "%DATA_DIR%\Settings" goto :data_failed
 
 echo       PASS
 echo.
-echo [5/5] Validating x64 format and dist contents...
+echo [5/5] Validating x64 output...
 
 powershell.exe -NoProfile -Command ^
   "$path = [IO.Path]::GetFullPath('%FINAL_PLUGIN%');" ^
@@ -108,13 +108,6 @@ powershell.exe -NoProfile -Command ^
   "if ([BitConverter]::ToUInt32($bytes, $pe) -ne 0x00004550) { exit 1 };" ^
   "if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { exit 1 };"
 if errorlevel 1 goto :wrong_architecture
-
-powershell.exe -NoProfile -Command ^
-  "$extra = Get-ChildItem -LiteralPath '%DIST_DIR%' -Force | Where-Object {" ^
-  "  $_.Name -ne 'SV-Drummer.vst3' -and -not ($_.Name -eq 'Data' -and $_.PSIsContainer)" ^
-  "};" ^
-  "if ($extra) { $extra | ForEach-Object { Write-Host ('Unexpected: ' + $_.FullName) }; exit 1 }"
-if errorlevel 1 goto :unexpected_dist_files
 
 echo       PASS
 echo.
@@ -129,7 +122,7 @@ echo.
 echo Output:
 echo   %FINAL_PLUGIN%
 echo.
-echo Existing user files in the portable Data folder were preserved.
+echo Existing user files in dist and the portable Data folder were preserved.
 echo No plug-in files were installed elsewhere.
 echo.
 exit /b 0
@@ -216,16 +209,6 @@ goto :failed
 echo.
 echo BUILD FAILED
 echo   - FAIL: dist\SV-Drummer.vst3 is not a Windows x64 PE binary
-goto :failed
-
-:unexpected_dist_files
-echo.
-echo BUILD FAILED
-echo   - FAIL: dist contains an unexpected file or folder
-echo.
-echo Allowed:
-echo   SV-Drummer.vst3
-echo   Data
 goto :failed
 
 :failed

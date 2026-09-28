@@ -11,7 +11,7 @@ class SVDrummerBrowserPanel;
 class SVDrummerLookAndFeel;
 class SVDrummerPadComponent;
 class SVDrummerPadSettingsPanel;
-class SVDrummerSequencerPlaceholder;
+class SVDrummerSequencerPanel;
 
 class SVDrummerAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                             public juce::DragAndDropContainer,
@@ -36,7 +36,7 @@ private:
     std::array<std::unique_ptr<SVDrummerPadComponent>,
                SVDrummerAudioProcessor::numberOfPads> padComponents;
     std::unique_ptr<SVDrummerPadSettingsPanel> padSettingsPanel;
-    std::unique_ptr<SVDrummerSequencerPlaceholder> sequencerPlaceholder;
+    std::unique_ptr<SVDrummerSequencerPanel> sequencerPanel;
 
     juce::TextButton sequencerViewButton { "SEQUENCER" };
     juce::TextButton settingsViewButton { "PAD SETTINGS" };

@@ -7,11 +7,17 @@
 #include <memory>
 #include <vector>
 
-class SVDrummerAudioProcessor final : public juce::AudioProcessor
+class SVDrummerAudioProcessor final : public juce::AudioProcessor,
+                                      private juce::AsyncUpdater
 {
 public:
     static constexpr int numberOfPads = 16;
+    static constexpr int numberOfPatterns = 16;
     static constexpr int voicesPerPad = 4;
+    static constexpr int sequencerDivisionCount = 7;
+    static constexpr int maximumPatternBars = 16;
+    static constexpr int maximumStepsPerBar = 48;
+    static constexpr int maximumStepsPerLane = maximumPatternBars * maximumStepsPerBar;
 
     struct SampleData
     {
@@ -72,15 +78,44 @@ public:
 
     void triggerPadFromInterface (int padIndex, float velocity = 1.0f);
 
+    bool isSequencerEnabled() const;
+    void setSequencerEnabled (bool shouldBeEnabled);
+    int getPatternBars() const;
+    void setPatternBars (int bars);
+    int getLaneDivision (int laneIndex) const;
+    void setLaneDivision (int laneIndex, int divisionIndex);
+    int getLaneLoopLength (int laneIndex) const;
+    void setLaneLoopLength (int laneIndex, int lengthInSteps);
+    int getLaneMaximumLoopLength (int laneIndex) const;
+    int getSequenceStepVelocity (int laneIndex, int stepIndex) const;
+    void setSequenceStepVelocity (int laneIndex, int stepIndex, int velocity);
+    int getActiveSequenceStep (int laneIndex) const;
+    double getSequencerPatternPositionQuarterNotes() const;
+
+    int getCurrentPatternIndex() const;
+    void selectPattern (int patternIndex);
+    bool isPatternAssigned (int patternIndex) const;
+    juce::String getPatternName (int patternIndex) const;
+    int getPatternMidiNote (int patternIndex) const;
+    void setPatternMidiNote (int patternIndex, int midiNote);
+    juce::Result loadPatternIntoSlot (int patternIndex, const juce::File& file);
+    juce::Result savePatternSlotToFile (int patternIndex, const juce::File& file);
+
+    static juce::String getSequencerDivisionName (int divisionIndex);
+    static int getSequencerStepsPerBar (int divisionIndex);
+    static double getSequencerQuarterNotesPerStep (int divisionIndex);
+
     juce::StringArray getBrowserFolders() const;
     void addBrowserFolder (const juce::File& folder);
     void removeBrowserFolder (const juce::File& folder);
 
     juce::File getPortableDataDirectory() const;
     juce::File getPortableSamplesDirectory() const;
+    juce::File getPortablePatternsDirectory() const;
     void flushPortableSettingsIfNeeded();
 
     static bool isSupportedAudioFile (const juce::File& file);
+    static bool isSupportedPatternFile (const juce::File& file);
 
 private:
     struct Voice
@@ -89,8 +124,23 @@ private:
         double position = 0.0;
         double increment = 1.0;
         float velocity = 1.0f;
+        int delaySamples = 0;
         std::uint64_t sampleRevision = 0;
         bool active = false;
+    };
+
+    struct LaneSequenceState
+    {
+        LaneSequenceState()
+        {
+            for (auto& velocity : stepVelocities)
+                velocity.store (0);
+        }
+
+        std::array<std::atomic<std::uint8_t>, maximumStepsPerLane> stepVelocities;
+        std::atomic<int> division { 3 };
+        std::atomic<int> loopLength { 16 };
+        std::atomic<int> activeStep { -1 };
     };
 
     struct PadState
@@ -111,30 +161,90 @@ private:
         juce::String displayName { "EMPTY" };
     };
 
+    struct PatternLaneState
+    {
+        std::array<std::uint8_t, maximumStepsPerLane> stepVelocities {};
+        int division = 3;
+        int loopLength = 16;
+    };
+
+    struct PatternPadState
+    {
+        std::shared_ptr<const SampleData> sample;
+        juce::String samplePath;
+        juce::String displayName { "EMPTY" };
+        int midiNote = 36;
+        bool muted = false;
+        bool soloed = false;
+        bool reversed = false;
+        float volumeDb = 0.0f;
+        float pan = 0.0f;
+        float tuneSemitones = 0.0f;
+    };
+
+    struct StoredPattern
+    {
+        std::array<PatternLaneState, numberOfPads> lanes;
+        std::array<PatternPadState, numberOfPads> pads;
+        juce::String name;
+        int bars = 1;
+        bool assigned = false;
+    };
+
     std::array<PadState, numberOfPads> pads;
+    std::array<LaneSequenceState, numberOfPads> sequenceLanes;
     std::array<std::atomic<float>, numberOfPads> pendingInterfaceVelocities;
     std::atomic<std::uint32_t> pendingInterfaceTriggers { 0 };
+    std::atomic<bool> sequencerEnabled { false };
+    std::atomic<int> patternBars { 1 };
+    std::atomic<double> sequencerPatternPositionQuarterNotes { 0.0 };
+    std::array<StoredPattern, numberOfPatterns> storedPatterns;
+    std::array<std::atomic<int>, numberOfPatterns> patternMidiNotes;
+    std::atomic<int> currentPatternIndex { 0 };
+    std::atomic<int> pendingPatternSelection { -1 };
+    std::atomic<std::uint64_t> patternChangeCounter { 0 };
 
     juce::AudioFormatManager formatManager;
     double currentSampleRate = 44100.0;
+    std::array<juce::int64, numberOfPads> lastSequenceAbsoluteSteps;
+    std::uint64_t lastPatternChangeCounter = 0;
+    double fallbackSequencerPpq = 0.0;
+    bool sequencerWasPlaying = false;
 
     mutable juce::CriticalSection stateLock;
     juce::StringArray browserFolders;
     std::atomic<bool> portableSettingsDirty { false };
 
-    void triggerPadOnAudioThread (int padIndex, float velocity);
+    void triggerPadOnAudioThread (int padIndex, float velocity, int delaySamples = 0);
+    void processSequencerTriggers (int numSamples);
+    void resetSequencerTimeline();
     void renderPadVoices (int padIndex,
                           juce::AudioBuffer<float>& output,
                           bool outputEnabled);
     bool anyPadIsSoloed() const;
     bool isValidPadIndex (int padIndex) const noexcept;
+    bool isValidPatternIndex (int patternIndex) const noexcept;
     void markPortableSettingsDirty() noexcept;
 
+    void handleAsyncUpdate() override;
+    void captureCurrentPattern();
+    void applyStoredPattern (int patternIndex);
+    void initialisePatternSlot (int patternIndex, bool copyCurrentKit);
+    std::shared_ptr<const SampleData> createSampleData (const juce::File& file,
+                                                        juce::String& errorMessage);
+    std::unique_ptr<juce::XmlElement> createPatternXml (int patternIndex) const;
+    juce::Result loadPatternXmlIntoSlot (int patternIndex,
+                                         const juce::XmlElement& patternXml);
+    juce::Result saveStoredPatternToFile (int patternIndex,
+                                           const juce::File& file) const;
+
     void loadPortableSettings();
-    void savePortableSettings() const;
+    void savePortableSettings();
     juce::File getPortableSettingsFile() const;
     juce::String makeStoredPath (const juce::File& file) const;
     juce::File resolveStoredPath (const juce::String& storedPath) const;
+    juce::String encodeLaneSteps (int laneIndex) const;
+    void decodeLaneSteps (int laneIndex, const juce::String& encodedSteps);
     static juce::File getThisModuleFile();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SVDrummerAudioProcessor)

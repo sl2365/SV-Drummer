@@ -29,7 +29,19 @@ SVDrummerAudioProcessor::SVDrummerAudioProcessor()
         pendingInterfaceVelocities[static_cast<std::size_t> (index)].store (1.0f);
     }
 
+    for (int index = 0; index < numberOfPatterns; ++index)
+    {
+        storedPatterns[static_cast<std::size_t> (index)].name
+            = "Pattern " + juce::String (index + 1).paddedLeft ('0', 2);
+        patternMidiNotes[static_cast<std::size_t> (index)].store (-1);
+    }
+
+    lastSequenceAbsoluteSteps.fill ((std::numeric_limits<juce::int64>::min)());
+
     loadPortableSettings();
+
+    if (! storedPatterns[0].assigned)
+        captureCurrentPattern();
 
     if (getBrowserFolders().isEmpty())
     {
@@ -42,6 +54,7 @@ SVDrummerAudioProcessor::SVDrummerAudioProcessor()
 
 SVDrummerAudioProcessor::~SVDrummerAudioProcessor()
 {
+    cancelPendingUpdate();
     flushPortableSettingsIfNeeded();
 }
 
@@ -64,6 +77,8 @@ void SVDrummerAudioProcessor::changeProgramName (int, const juce::String&) {}
 void SVDrummerAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
+    lastPatternChangeCounter = patternChangeCounter.load();
+    resetSequencerTimeline();
 
     for (auto& pad : pads)
         for (auto& voice : pad.voices)
@@ -96,10 +111,28 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         const int note = message.getNoteNumber();
         const float velocity = juce::jlimit (0.0f, 1.0f, message.getFloatVelocity());
+        bool selectsPattern = false;
+
+        for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
+        {
+            if (patternMidiNotes[static_cast<std::size_t> (patternIndex)].load() == note)
+            {
+                pendingPatternSelection.store (patternIndex);
+                triggerAsyncUpdate();
+                selectsPattern = true;
+                break;
+            }
+        }
+
+        if (selectsPattern)
+            continue;
 
         for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
             if (pads[static_cast<std::size_t> (padIndex)].midiNote.load() == note)
-                triggerPadOnAudioThread (padIndex, velocity);
+                triggerPadOnAudioThread (
+                    padIndex, velocity,
+                    juce::jlimit (0, juce::jmax (0, buffer.getNumSamples() - 1),
+                                  metadata.samplePosition));
     }
 
     const auto pending = pendingInterfaceTriggers.exchange (0);
@@ -108,7 +141,10 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         if ((pending & (std::uint32_t { 1 } << static_cast<unsigned int> (padIndex))) != 0)
             triggerPadOnAudioThread (
                 padIndex,
-                pendingInterfaceVelocities[static_cast<std::size_t> (padIndex)].load());
+                pendingInterfaceVelocities[static_cast<std::size_t> (padIndex)].load(),
+                0);
+
+    processSequencerTriggers (buffer.getNumSamples());
 
     const bool hasSolo = anyPadIsSoloed();
 
@@ -122,7 +158,9 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 }
 
-void SVDrummerAudioProcessor::triggerPadOnAudioThread (int padIndex, float velocity)
+void SVDrummerAudioProcessor::triggerPadOnAudioThread (int padIndex,
+                                                        float velocity,
+                                                        int delaySamples)
 {
     if (! isValidPadIndex (padIndex))
         return;
@@ -157,6 +195,7 @@ void SVDrummerAudioProcessor::triggerPadOnAudioThread (int padIndex, float veloc
 
     voice.sample = sample;
     voice.velocity = juce::jlimit (0.0f, 1.0f, velocity);
+    voice.delaySamples = juce::jmax (0, delaySamples);
     voice.increment = sourceRatio * tuneRatio * (reversed ? -1.0 : 1.0);
     voice.position = reversed ? static_cast<double> (sample->audio.getNumSamples() - 1)
                               : 0.0;
@@ -196,7 +235,10 @@ void SVDrummerAudioProcessor::renderPadVoices (int padIndex,
         const int sourceSamples = source.getNumSamples();
         const int sourceChannels = source.getNumChannels();
 
-        for (int outputSample = 0; outputSample < outputSamples; ++outputSample)
+        const int firstOutputSample = juce::jmin (outputSamples, voice.delaySamples);
+        voice.delaySamples -= firstOutputSample;
+
+        for (int outputSample = firstOutputSample; outputSample < outputSamples; ++outputSample)
         {
             if (voice.position < 0.0 || voice.position >= static_cast<double> (sourceSamples))
             {
@@ -255,19 +297,55 @@ juce::Result SVDrummerAudioProcessor::loadSampleIntoPad (int padIndex,
     if (! isValidPadIndex (padIndex))
         return juce::Result::fail ("Invalid pad number.");
 
+    juce::String errorMessage;
+    const auto newSample = createSampleData (file, errorMessage);
+
+    if (newSample == nullptr)
+        return juce::Result::fail (errorMessage);
+
+    auto& pad = pads[static_cast<std::size_t> (padIndex)];
+    pad.sampleRevision.fetch_add (1);
+    std::atomic_store_explicit (&pad.sample, newSample, std::memory_order_release);
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        pad.samplePath = file.getFullPathName();
+        pad.displayName = file.getFileNameWithoutExtension();
+    }
+
+    markPortableSettingsDirty();
+    return juce::Result::ok();
+}
+
+std::shared_ptr<const SVDrummerAudioProcessor::SampleData>
+SVDrummerAudioProcessor::createSampleData (const juce::File& file,
+                                            juce::String& errorMessage)
+{
     if (! file.existsAsFile())
-        return juce::Result::fail ("The sample file does not exist.");
+    {
+        errorMessage = "The sample file does not exist.";
+        return {};
+    }
 
     if (! isSupportedAudioFile (file))
-        return juce::Result::fail ("Supported formats are WAV, MP3, OGG, FLAC and AIFF.");
+    {
+        errorMessage = "Supported formats are WAV, MP3, OGG, FLAC and AIFF.";
+        return {};
+    }
 
     std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
 
     if (reader == nullptr || reader->lengthInSamples <= 0 || reader->numChannels == 0)
-        return juce::Result::fail ("The sample could not be read.");
+    {
+        errorMessage = "The sample could not be read.";
+        return {};
+    }
 
     if (reader->lengthInSamples > static_cast<juce::int64> ((std::numeric_limits<int>::max)()))
-        return juce::Result::fail ("The sample is too long to load into memory.");
+    {
+        errorMessage = "The sample is too long to load into memory.";
+        return {};
+    }
 
     auto newSample = std::make_shared<SampleData>();
     const int sampleCount = static_cast<int> (reader->lengthInSamples);
@@ -277,7 +355,10 @@ juce::Result SVDrummerAudioProcessor::loadSampleIntoPad (int padIndex,
     newSample->audio.clear();
 
     if (! reader->read (&newSample->audio, 0, sampleCount, 0, true, true))
-        return juce::Result::fail ("The sample data could not be decoded.");
+    {
+        errorMessage = "The sample data could not be decoded.";
+        return {};
+    }
 
     newSample->sourceSampleRate = reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
     newSample->displayName = file.getFileNameWithoutExtension();
@@ -306,20 +387,8 @@ juce::Result SVDrummerAudioProcessor::loadSampleIntoPad (int padIndex,
         newSample->waveform.emplace_back (minimum, maximum);
     }
 
-    auto& pad = pads[static_cast<std::size_t> (padIndex)];
-    pad.sampleRevision.fetch_add (1);
-    std::atomic_store_explicit (&pad.sample,
-                                std::shared_ptr<const SampleData> (std::move (newSample)),
-                                std::memory_order_release);
-
-    {
-        const juce::ScopedLock lock (stateLock);
-        pad.samplePath = file.getFullPathName();
-        pad.displayName = file.getFileNameWithoutExtension();
-    }
-
-    markPortableSettingsDirty();
-    return juce::Result::ok();
+    errorMessage.clear();
+    return std::shared_ptr<const SampleData> (std::move (newSample));
 }
 
 void SVDrummerAudioProcessor::clearPadSample (int padIndex)
@@ -502,6 +571,462 @@ void SVDrummerAudioProcessor::triggerPadFromInterface (int padIndex, float veloc
         std::uint32_t { 1 } << static_cast<unsigned int> (padIndex));
 }
 
+bool SVDrummerAudioProcessor::isSequencerEnabled() const
+{
+    return sequencerEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setSequencerEnabled (bool shouldBeEnabled)
+{
+    sequencerEnabled.store (shouldBeEnabled);
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getPatternBars() const
+{
+    return patternBars.load();
+}
+
+void SVDrummerAudioProcessor::setPatternBars (int bars)
+{
+    const int newBars = juce::jlimit (1, maximumPatternBars, bars);
+    patternBars.store (newBars);
+
+    for (int lane = 0; lane < numberOfPads; ++lane)
+    {
+        auto& sequence = sequenceLanes[static_cast<std::size_t> (lane)];
+        sequence.loopLength.store (juce::jlimit (
+            1,
+            getLaneMaximumLoopLength (lane),
+            sequence.loopLength.load()));
+    }
+
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getLaneDivision (int laneIndex) const
+{
+    return isValidPadIndex (laneIndex)
+         ? sequenceLanes[static_cast<std::size_t> (laneIndex)].division.load()
+         : 3;
+}
+
+void SVDrummerAudioProcessor::setLaneDivision (int laneIndex, int divisionIndex)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
+    lane.division.store (juce::jlimit (0, sequencerDivisionCount - 1, divisionIndex));
+    lane.loopLength.store (juce::jlimit (
+        1, getLaneMaximumLoopLength (laneIndex), lane.loopLength.load()));
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getLaneLoopLength (int laneIndex) const
+{
+    return isValidPadIndex (laneIndex)
+         ? sequenceLanes[static_cast<std::size_t> (laneIndex)].loopLength.load()
+         : 1;
+}
+
+void SVDrummerAudioProcessor::setLaneLoopLength (int laneIndex, int lengthInSteps)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    sequenceLanes[static_cast<std::size_t> (laneIndex)].loopLength.store (
+        juce::jlimit (1, getLaneMaximumLoopLength (laneIndex), lengthInSteps));
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getLaneMaximumLoopLength (int laneIndex) const
+{
+    if (! isValidPadIndex (laneIndex))
+        return 1;
+
+    return juce::jlimit (
+        1,
+        maximumStepsPerLane,
+        getPatternBars() * getSequencerStepsPerBar (getLaneDivision (laneIndex)));
+}
+
+int SVDrummerAudioProcessor::getSequenceStepVelocity (int laneIndex, int stepIndex) const
+{
+    if (! isValidPadIndex (laneIndex)
+        || stepIndex < 0 || stepIndex >= maximumStepsPerLane)
+        return 0;
+
+    return static_cast<int> (
+        sequenceLanes[static_cast<std::size_t> (laneIndex)]
+            .stepVelocities[static_cast<std::size_t> (stepIndex)].load());
+}
+
+void SVDrummerAudioProcessor::setSequenceStepVelocity (int laneIndex,
+                                                        int stepIndex,
+                                                        int velocity)
+{
+    if (! isValidPadIndex (laneIndex)
+        || stepIndex < 0 || stepIndex >= maximumStepsPerLane)
+        return;
+
+    sequenceLanes[static_cast<std::size_t> (laneIndex)]
+        .stepVelocities[static_cast<std::size_t> (stepIndex)]
+        .store (static_cast<std::uint8_t> (juce::jlimit (0, 127, velocity)));
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getActiveSequenceStep (int laneIndex) const
+{
+    return isValidPadIndex (laneIndex)
+         ? sequenceLanes[static_cast<std::size_t> (laneIndex)].activeStep.load()
+         : -1;
+}
+
+double SVDrummerAudioProcessor::getSequencerPatternPositionQuarterNotes() const
+{
+    return sequencerPatternPositionQuarterNotes.load();
+}
+
+int SVDrummerAudioProcessor::getCurrentPatternIndex() const
+{
+    return currentPatternIndex.load();
+}
+
+void SVDrummerAudioProcessor::selectPattern (int newPatternIndex)
+{
+    if (! isValidPatternIndex (newPatternIndex))
+        return;
+
+    const int oldPatternIndex = currentPatternIndex.load();
+
+    if (newPatternIndex == oldPatternIndex)
+        return;
+
+    captureCurrentPattern();
+
+    if (! storedPatterns[static_cast<std::size_t> (newPatternIndex)].assigned)
+        initialisePatternSlot (newPatternIndex, true);
+
+    currentPatternIndex.store (newPatternIndex);
+    applyStoredPattern (newPatternIndex);
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isPatternAssigned (int patternIndex) const
+{
+    return isValidPatternIndex (patternIndex)
+        && storedPatterns[static_cast<std::size_t> (patternIndex)].assigned;
+}
+
+juce::String SVDrummerAudioProcessor::getPatternName (int patternIndex) const
+{
+    if (! isValidPatternIndex (patternIndex))
+        return {};
+
+    const juce::ScopedLock lock (stateLock);
+    return storedPatterns[static_cast<std::size_t> (patternIndex)].name;
+}
+
+int SVDrummerAudioProcessor::getPatternMidiNote (int patternIndex) const
+{
+    return isValidPatternIndex (patternIndex)
+         ? patternMidiNotes[static_cast<std::size_t> (patternIndex)].load()
+         : -1;
+}
+
+void SVDrummerAudioProcessor::setPatternMidiNote (int patternIndex, int midiNote)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return;
+
+    patternMidiNotes[static_cast<std::size_t> (patternIndex)].store (
+        juce::jlimit (-1, 127, midiNote));
+    markPortableSettingsDirty();
+}
+
+void SVDrummerAudioProcessor::handleAsyncUpdate()
+{
+    const int requestedPattern = pendingPatternSelection.exchange (-1);
+
+    if (isValidPatternIndex (requestedPattern))
+        selectPattern (requestedPattern);
+}
+
+void SVDrummerAudioProcessor::captureCurrentPattern()
+{
+    const int patternIndex = currentPatternIndex.load();
+
+    if (! isValidPatternIndex (patternIndex))
+        return;
+
+    auto& stored = storedPatterns[static_cast<std::size_t> (patternIndex)];
+    stored.assigned = true;
+    stored.bars = getPatternBars();
+
+    if (stored.name.isEmpty())
+        stored.name = "Pattern " + juce::String (patternIndex + 1).paddedLeft ('0', 2);
+
+    for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+    {
+        auto& targetLane = stored.lanes[static_cast<std::size_t> (laneIndex)];
+        targetLane.division = getLaneDivision (laneIndex);
+        targetLane.loopLength = getLaneLoopLength (laneIndex);
+
+        for (int step = 0; step < maximumStepsPerLane; ++step)
+            targetLane.stepVelocities[static_cast<std::size_t> (step)]
+                = static_cast<std::uint8_t> (getSequenceStepVelocity (laneIndex, step));
+    }
+
+    const juce::ScopedLock lock (stateLock);
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto& sourcePad = pads[static_cast<std::size_t> (padIndex)];
+        auto& targetPad = stored.pads[static_cast<std::size_t> (padIndex)];
+        targetPad.sample = std::atomic_load_explicit (&sourcePad.sample,
+                                                      std::memory_order_acquire);
+        targetPad.samplePath = sourcePad.samplePath;
+        targetPad.displayName = sourcePad.displayName;
+        targetPad.midiNote = sourcePad.midiNote.load();
+        targetPad.muted = sourcePad.muted.load();
+        targetPad.soloed = sourcePad.soloed.load();
+        targetPad.reversed = sourcePad.reversed.load();
+        targetPad.volumeDb = sourcePad.volumeDb.load();
+        targetPad.pan = sourcePad.pan.load();
+        targetPad.tuneSemitones = sourcePad.tuneSemitones.load();
+    }
+}
+
+void SVDrummerAudioProcessor::initialisePatternSlot (int patternIndex,
+                                                      bool copyCurrentKit)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return;
+
+    StoredPattern newPattern;
+    newPattern.assigned = true;
+    newPattern.name = "Pattern " + juce::String (patternIndex + 1).paddedLeft ('0', 2);
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+        newPattern.pads[static_cast<std::size_t> (padIndex)].midiNote = 36 + padIndex;
+
+    if (copyCurrentKit)
+    {
+        const int sourceIndex = currentPatternIndex.load();
+
+        if (isValidPatternIndex (sourceIndex)
+            && storedPatterns[static_cast<std::size_t> (sourceIndex)].assigned)
+        {
+            const auto& source = storedPatterns[static_cast<std::size_t> (sourceIndex)];
+            newPattern.bars = source.bars;
+            newPattern.pads = source.pads;
+
+            for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+            {
+                newPattern.lanes[static_cast<std::size_t> (laneIndex)].division
+                    = source.lanes[static_cast<std::size_t> (laneIndex)].division;
+                newPattern.lanes[static_cast<std::size_t> (laneIndex)].loopLength
+                    = source.lanes[static_cast<std::size_t> (laneIndex)].loopLength;
+            }
+        }
+    }
+
+    storedPatterns[static_cast<std::size_t> (patternIndex)] = std::move (newPattern);
+}
+
+void SVDrummerAudioProcessor::applyStoredPattern (int patternIndex)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return;
+
+    const auto& stored = storedPatterns[static_cast<std::size_t> (patternIndex)];
+    patternBars.store (juce::jlimit (1, maximumPatternBars, stored.bars));
+
+    for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+    {
+        const auto& sourceLane = stored.lanes[static_cast<std::size_t> (laneIndex)];
+        auto& targetLane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
+        targetLane.division.store (juce::jlimit (
+            0, sequencerDivisionCount - 1, sourceLane.division));
+        targetLane.loopLength.store (juce::jlimit (
+            1, getLaneMaximumLoopLength (laneIndex), sourceLane.loopLength));
+
+        for (int step = 0; step < maximumStepsPerLane; ++step)
+            targetLane.stepVelocities[static_cast<std::size_t> (step)].store (
+                sourceLane.stepVelocities[static_cast<std::size_t> (step)]);
+    }
+
+    {
+        const juce::ScopedLock lock (stateLock);
+
+        for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+        {
+            const auto& sourcePad = stored.pads[static_cast<std::size_t> (padIndex)];
+            auto& targetPad = pads[static_cast<std::size_t> (padIndex)];
+            targetPad.sampleRevision.fetch_add (1);
+            std::atomic_store_explicit (&targetPad.sample, sourcePad.sample,
+                                        std::memory_order_release);
+            targetPad.samplePath = sourcePad.samplePath;
+            targetPad.displayName = sourcePad.displayName;
+            targetPad.midiNote.store (juce::jlimit (0, 127, sourcePad.midiNote));
+            targetPad.muted.store (sourcePad.muted);
+            targetPad.soloed.store (sourcePad.soloed);
+            targetPad.reversed.store (sourcePad.reversed);
+            targetPad.volumeDb.store (juce::jlimit (-60.0f, 6.0f, sourcePad.volumeDb));
+            targetPad.pan.store (juce::jlimit (-1.0f, 1.0f, sourcePad.pan));
+            targetPad.tuneSemitones.store (
+                juce::jlimit (-24.0f, 24.0f, sourcePad.tuneSemitones));
+        }
+    }
+
+    patternChangeCounter.fetch_add (1);
+}
+
+juce::String SVDrummerAudioProcessor::getSequencerDivisionName (int divisionIndex)
+{
+    static const std::array<juce::String, sequencerDivisionCount> names
+    {
+        "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"
+    };
+
+    return names[static_cast<std::size_t> (
+        juce::jlimit (0, sequencerDivisionCount - 1, divisionIndex))];
+}
+
+int SVDrummerAudioProcessor::getSequencerStepsPerBar (int divisionIndex)
+{
+    static constexpr std::array<int, sequencerDivisionCount> steps
+    {
+        4, 8, 12, 16, 24, 32, 48
+    };
+
+    return steps[static_cast<std::size_t> (
+        juce::jlimit (0, sequencerDivisionCount - 1, divisionIndex))];
+}
+
+double SVDrummerAudioProcessor::getSequencerQuarterNotesPerStep (int divisionIndex)
+{
+    static constexpr std::array<double, sequencerDivisionCount> lengths
+    {
+        1.0, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125, 1.0 / 12.0
+    };
+
+    return lengths[static_cast<std::size_t> (
+        juce::jlimit (0, sequencerDivisionCount - 1, divisionIndex))];
+}
+
+void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
+{
+    const auto currentPatternRevision = patternChangeCounter.load();
+
+    if (currentPatternRevision != lastPatternChangeCounter)
+    {
+        lastPatternChangeCounter = currentPatternRevision;
+        resetSequencerTimeline();
+    }
+
+    auto playing = false;
+    auto bpm = 120.0;
+    auto blockStartPpq = fallbackSequencerPpq;
+    auto hostPpqAvailable = false;
+
+    if (auto* currentPlayHead = getPlayHead())
+    {
+        if (const auto position = currentPlayHead->getPosition())
+        {
+            playing = position->getIsPlaying();
+
+            if (const auto hostBpm = position->getBpm())
+                bpm = juce::jmax (1.0, *hostBpm);
+
+            if (const auto ppq = position->getPpqPosition())
+            {
+                blockStartPpq = *ppq;
+                hostPpqAvailable = true;
+            }
+        }
+    }
+
+    if (! sequencerEnabled.load() || ! playing || numSamples <= 0)
+    {
+        if (sequencerWasPlaying)
+            resetSequencerTimeline();
+
+        for (auto& lane : sequenceLanes)
+            lane.activeStep.store (-1);
+
+        if (! playing)
+        {
+            fallbackSequencerPpq = 0.0;
+            sequencerPatternPositionQuarterNotes.store (0.0);
+        }
+
+        sequencerWasPlaying = false;
+        return;
+    }
+
+    const double quarterNotesPerSample = bpm / (60.0 * juce::jmax (1.0, currentSampleRate));
+    const bool forceInitialTrigger = ! sequencerWasPlaying;
+
+    for (int sample = 0; sample < numSamples; ++sample)
+    {
+        const double ppq = blockStartPpq
+                         + static_cast<double> (sample) * quarterNotesPerSample;
+
+        for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+        {
+            auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
+            const double stepLength = getSequencerQuarterNotesPerStep (lane.division.load());
+            const auto absoluteStep = static_cast<juce::int64> (
+                std::floor ((ppq + 1.0e-10) / stepLength));
+            auto& lastStep = lastSequenceAbsoluteSteps[static_cast<std::size_t> (laneIndex)];
+
+            if (! (forceInitialTrigger && sample == 0) && absoluteStep == lastStep)
+                continue;
+
+            lastStep = absoluteStep;
+            const int loopLength = juce::jmax (1, lane.loopLength.load());
+            const int sequenceStep = static_cast<int> (
+                (absoluteStep % loopLength + loopLength) % loopLength);
+            lane.activeStep.store (sequenceStep);
+
+            const int velocity = static_cast<int> (
+                lane.stepVelocities[static_cast<std::size_t> (sequenceStep)].load());
+
+            if (velocity > 0)
+                triggerPadOnAudioThread (laneIndex,
+                                         static_cast<float> (velocity) / 127.0f,
+                                         sample);
+        }
+    }
+
+    const double blockEndPpq = blockStartPpq
+                             + static_cast<double> (numSamples) * quarterNotesPerSample;
+    fallbackSequencerPpq = hostPpqAvailable ? blockEndPpq : fallbackSequencerPpq
+                                                              + static_cast<double> (numSamples)
+                                                                    * quarterNotesPerSample;
+
+    const double patternLength = static_cast<double> (getPatternBars()) * 4.0;
+    double patternPosition = std::fmod (blockEndPpq, patternLength);
+
+    if (patternPosition < 0.0)
+        patternPosition += patternLength;
+
+    sequencerPatternPositionQuarterNotes.store (patternPosition);
+    sequencerWasPlaying = true;
+}
+
+void SVDrummerAudioProcessor::resetSequencerTimeline()
+{
+    lastSequenceAbsoluteSteps.fill ((std::numeric_limits<juce::int64>::min)());
+    fallbackSequencerPpq = 0.0;
+    sequencerWasPlaying = false;
+
+    for (auto& lane : sequenceLanes)
+        lane.activeStep.store (-1);
+}
+
 juce::StringArray SVDrummerAudioProcessor::getBrowserFolders() const
 {
     const juce::ScopedLock lock (stateLock);
@@ -559,6 +1084,11 @@ juce::File SVDrummerAudioProcessor::getPortableSamplesDirectory() const
     return getPortableDataDirectory().getChildFile ("Samples");
 }
 
+juce::File SVDrummerAudioProcessor::getPortablePatternsDirectory() const
+{
+    return getPortableDataDirectory().getChildFile ("Patterns");
+}
+
 juce::File SVDrummerAudioProcessor::getPortableSettingsFile() const
 {
     return getPortableDataDirectory()
@@ -609,6 +1139,267 @@ juce::File SVDrummerAudioProcessor::resolveStoredPath (const juce::String& store
     return juce::File (storedPath);
 }
 
+std::unique_ptr<juce::XmlElement>
+SVDrummerAudioProcessor::createPatternXml (int patternIndex) const
+{
+    if (! isValidPatternIndex (patternIndex))
+        return {};
+
+    const auto& pattern = storedPatterns[static_cast<std::size_t> (patternIndex)];
+    auto xml = std::make_unique<juce::XmlElement> ("SVDRUMMER_PATTERN");
+    xml->setAttribute ("version", "1.0");
+    xml->setAttribute ("name", pattern.name);
+    xml->setAttribute ("bars", pattern.bars);
+
+    for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+    {
+        const auto& lane = pattern.lanes[static_cast<std::size_t> (laneIndex)];
+        juce::String encodedSteps;
+
+        for (int step = 0; step < maximumStepsPerLane; ++step)
+        {
+            const int velocity = static_cast<int> (
+                lane.stepVelocities[static_cast<std::size_t> (step)]);
+
+            if (velocity <= 0)
+                continue;
+
+            if (encodedSteps.isNotEmpty())
+                encodedSteps << ";";
+
+            encodedSteps << step << ":" << velocity;
+        }
+
+        auto* laneXml = xml->createNewChildElement ("LANE");
+        laneXml->setAttribute ("index", laneIndex);
+        laneXml->setAttribute ("division", lane.division);
+        laneXml->setAttribute ("length", lane.loopLength);
+        laneXml->setAttribute ("steps", encodedSteps);
+    }
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto& pad = pattern.pads[static_cast<std::size_t> (padIndex)];
+        auto* padXml = xml->createNewChildElement ("PAD");
+        padXml->setAttribute ("index", padIndex);
+        padXml->setAttribute ("note", pad.midiNote);
+        padXml->setAttribute ("mute", pad.muted);
+        padXml->setAttribute ("solo", pad.soloed);
+        padXml->setAttribute ("reverse", pad.reversed);
+        padXml->setAttribute ("volumeDb", static_cast<double> (pad.volumeDb));
+        padXml->setAttribute ("pan", static_cast<double> (pad.pan));
+        padXml->setAttribute ("tune", static_cast<double> (pad.tuneSemitones));
+        padXml->setAttribute ("sample", pad.samplePath.isNotEmpty()
+                                         ? makeStoredPath (juce::File (pad.samplePath))
+                                         : juce::String());
+    }
+
+    return xml;
+}
+
+juce::Result SVDrummerAudioProcessor::loadPatternXmlIntoSlot (
+    int patternIndex, const juce::XmlElement& patternXml)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return juce::Result::fail ("Invalid pattern slot.");
+
+    if (! patternXml.hasTagName ("SVDRUMMER_PATTERN"))
+        return juce::Result::fail ("This is not an SV-Drummer pattern file.");
+
+    StoredPattern loaded;
+    loaded.assigned = true;
+    loaded.name = patternXml.getStringAttribute (
+        "name", "Pattern " + juce::String (patternIndex + 1).paddedLeft ('0', 2));
+    loaded.bars = juce::jlimit (
+        1, maximumPatternBars, patternXml.getIntAttribute ("bars", 1));
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+        loaded.pads[static_cast<std::size_t> (padIndex)].midiNote = 36 + padIndex;
+
+    for (auto* item : patternXml.getChildWithTagNameIterator ("LANE"))
+    {
+        const int laneIndex = item->getIntAttribute ("index", -1);
+
+        if (! isValidPadIndex (laneIndex))
+            continue;
+
+        auto& lane = loaded.lanes[static_cast<std::size_t> (laneIndex)];
+        lane.division = juce::jlimit (
+            0, sequencerDivisionCount - 1, item->getIntAttribute ("division", 3));
+        lane.loopLength = juce::jlimit (
+            1,
+            loaded.bars * getSequencerStepsPerBar (lane.division),
+            item->getIntAttribute ("length", 16));
+
+        juce::StringArray entries;
+        entries.addTokens (item->getStringAttribute ("steps"), ";", {});
+
+        for (const auto& entry : entries)
+        {
+            const int separator = entry.indexOfChar (':');
+
+            if (separator <= 0)
+                continue;
+
+            const int step = entry.substring (0, separator).getIntValue();
+            const int velocity = entry.substring (separator + 1).getIntValue();
+
+            if (step >= 0 && step < maximumStepsPerLane)
+                lane.stepVelocities[static_cast<std::size_t> (step)]
+                    = static_cast<std::uint8_t> (juce::jlimit (0, 127, velocity));
+        }
+    }
+
+    for (auto* item : patternXml.getChildWithTagNameIterator ("PAD"))
+    {
+        const int padIndex = item->getIntAttribute ("index", -1);
+
+        if (! isValidPadIndex (padIndex))
+            continue;
+
+        auto& pad = loaded.pads[static_cast<std::size_t> (padIndex)];
+        pad.midiNote = juce::jlimit (
+            0, 127, item->getIntAttribute ("note", 36 + padIndex));
+        pad.muted = item->getBoolAttribute ("mute", false);
+        pad.soloed = item->getBoolAttribute ("solo", false);
+        pad.reversed = item->getBoolAttribute ("reverse", false);
+        pad.volumeDb = juce::jlimit (
+            -60.0f, 6.0f,
+            static_cast<float> (item->getDoubleAttribute ("volumeDb", 0.0)));
+        pad.pan = juce::jlimit (
+            -1.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute ("pan", 0.0)));
+        pad.tuneSemitones = juce::jlimit (
+            -24.0f, 24.0f,
+            static_cast<float> (item->getDoubleAttribute ("tune", 0.0)));
+
+        const auto storedPath = item->getStringAttribute ("sample");
+
+        if (storedPath.isEmpty())
+            continue;
+
+        const auto sampleFile = resolveStoredPath (storedPath);
+        pad.samplePath = sampleFile.getFullPathName();
+        juce::String errorMessage;
+        pad.sample = createSampleData (sampleFile, errorMessage);
+        pad.displayName = pad.sample != nullptr
+                            ? sampleFile.getFileNameWithoutExtension()
+                            : sampleFile.getFileNameWithoutExtension() + " (MISSING)";
+    }
+
+    storedPatterns[static_cast<std::size_t> (patternIndex)] = std::move (loaded);
+    return juce::Result::ok();
+}
+
+juce::Result SVDrummerAudioProcessor::saveStoredPatternToFile (
+    int patternIndex, const juce::File& file) const
+{
+    const auto xml = createPatternXml (patternIndex);
+
+    if (xml == nullptr)
+        return juce::Result::fail ("Invalid pattern slot.");
+
+    if (file.getParentDirectory().createDirectory().failed())
+        return juce::Result::fail ("The pattern folder could not be created.");
+
+    if (! file.replaceWithText (xml->toString(), false, false, "\r\n"))
+        return juce::Result::fail ("The pattern file could not be written.");
+
+    return juce::Result::ok();
+}
+
+juce::Result SVDrummerAudioProcessor::loadPatternIntoSlot (
+    int patternIndex, const juce::File& file)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return juce::Result::fail ("Invalid pattern slot.");
+
+    if (! isSupportedPatternFile (file) || ! file.existsAsFile())
+        return juce::Result::fail ("Select an SV-Drummer .svpattern file.");
+
+    const auto xml = juce::XmlDocument::parse (file);
+
+    if (xml == nullptr)
+        return juce::Result::fail ("The pattern file could not be read.");
+
+    captureCurrentPattern();
+    const auto result = loadPatternXmlIntoSlot (patternIndex, *xml);
+
+    if (result.failed())
+        return result;
+
+    if (patternIndex == currentPatternIndex.load())
+        applyStoredPattern (patternIndex);
+
+    markPortableSettingsDirty();
+    return juce::Result::ok();
+}
+
+juce::Result SVDrummerAudioProcessor::savePatternSlotToFile (
+    int patternIndex, const juce::File& file)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return juce::Result::fail ("Invalid pattern slot.");
+
+    if (patternIndex == currentPatternIndex.load())
+        captureCurrentPattern();
+
+    return saveStoredPatternToFile (patternIndex, file);
+}
+
+juce::String SVDrummerAudioProcessor::encodeLaneSteps (int laneIndex) const
+{
+    if (! isValidPadIndex (laneIndex))
+        return {};
+
+    juce::String encoded;
+
+    for (int step = 0; step < maximumStepsPerLane; ++step)
+    {
+        const int velocity = getSequenceStepVelocity (laneIndex, step);
+
+        if (velocity <= 0)
+            continue;
+
+        if (encoded.isNotEmpty())
+            encoded << ";";
+
+        encoded << step << ":" << velocity;
+    }
+
+    return encoded;
+}
+
+void SVDrummerAudioProcessor::decodeLaneSteps (int laneIndex,
+                                                const juce::String& encodedSteps)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
+
+    for (auto& velocity : lane.stepVelocities)
+        velocity.store (0);
+
+    juce::StringArray entries;
+    entries.addTokens (encodedSteps, ";", {});
+
+    for (const auto& entry : entries)
+    {
+        const int separator = entry.indexOfChar (':');
+
+        if (separator <= 0)
+            continue;
+
+        const int step = entry.substring (0, separator).getIntValue();
+        const int velocity = entry.substring (separator + 1).getIntValue();
+
+        if (step >= 0 && step < maximumStepsPerLane)
+            lane.stepVelocities[static_cast<std::size_t> (step)].store (
+                static_cast<std::uint8_t> (juce::jlimit (0, 127, velocity)));
+    }
+}
+
 void SVDrummerAudioProcessor::markPortableSettingsDirty() noexcept
 {
     portableSettingsDirty.store (true);
@@ -620,12 +1411,13 @@ void SVDrummerAudioProcessor::flushPortableSettingsIfNeeded()
         savePortableSettings();
 }
 
-void SVDrummerAudioProcessor::savePortableSettings() const
+void SVDrummerAudioProcessor::savePortableSettings()
 {
+    captureCurrentPattern();
     const auto settingsFile = getPortableSettingsFile();
     settingsFile.getParentDirectory().createDirectory();
     getPortableSamplesDirectory().createDirectory();
-    getPortableDataDirectory().getChildFile ("Patterns").createDirectory();
+    getPortablePatternsDirectory().createDirectory();
 
     juce::StringArray lines;
     lines.add ("; SV-Drummer portable settings");
@@ -673,6 +1465,43 @@ void SVDrummerAudioProcessor::savePortableSettings() const
                           : juce::String()));
     }
 
+    lines.add (juce::String());
+    lines.add ("[Sequencer]");
+    lines.add ("Enabled=" + juce::String (isSequencerEnabled() ? 1 : 0));
+    lines.add ("PatternBars=" + juce::String (getPatternBars()));
+
+    for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+    {
+        const auto prefix = "Lane" + juce::String (laneIndex + 1).paddedLeft ('0', 2);
+        lines.add (prefix + "Division=" + juce::String (getLaneDivision (laneIndex)));
+        lines.add (prefix + "Length=" + juce::String (getLaneLoopLength (laneIndex)));
+        lines.add (prefix + "Steps=" + encodeLaneSteps (laneIndex));
+    }
+
+    lines.add (juce::String());
+    lines.add ("[Patterns]");
+    lines.add ("Current=" + juce::String (getCurrentPatternIndex() + 1));
+    const auto slotFolder = getPortablePatternsDirectory().getChildFile ("Slots");
+    slotFolder.createDirectory();
+
+    for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
+    {
+        const auto prefix = "Pattern"
+                          + juce::String (patternIndex + 1).paddedLeft ('0', 2);
+        const bool assigned = isPatternAssigned (patternIndex);
+        lines.add (prefix + "Assigned=" + juce::String (assigned ? 1 : 0));
+        lines.add (prefix + "MidiNote=" + juce::String (getPatternMidiNote (patternIndex)));
+
+        if (assigned)
+        {
+            const auto patternFile = slotFolder.getChildFile (
+                "Pattern " + juce::String (patternIndex + 1).paddedLeft ('0', 2)
+                    + ".svpattern");
+            saveStoredPatternToFile (patternIndex, patternFile);
+            lines.add (prefix + "File=" + makeStoredPath (patternFile));
+        }
+    }
+
     settingsFile.replaceWithText (lines.joinIntoString ("\r\n") + "\r\n", false, false);
 }
 
@@ -715,6 +1544,27 @@ void SVDrummerAudioProcessor::loadPortableSettings()
         }
     }
 
+    sequencerEnabled.store (values.getValue ("Enabled", "0").getIntValue() != 0);
+    patternBars.store (juce::jlimit (
+        1,
+        maximumPatternBars,
+        values.getValue ("PatternBars", "1").getIntValue()));
+
+    for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+    {
+        const auto prefix = "Lane" + juce::String (laneIndex + 1).paddedLeft ('0', 2);
+        auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
+        lane.division.store (juce::jlimit (
+            0,
+            sequencerDivisionCount - 1,
+            values.getValue (prefix + "Division", "3").getIntValue()));
+        lane.loopLength.store (juce::jlimit (
+            1,
+            getLaneMaximumLoopLength (laneIndex),
+            values.getValue (prefix + "Length", "16").getIntValue()));
+        decodeLaneSteps (laneIndex, values.getValue (prefix + "Steps", {}));
+    }
+
     for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
     {
         const auto prefix = "Pad" + juce::String (padIndex + 1).paddedLeft ('0', 2);
@@ -751,11 +1601,63 @@ void SVDrummerAudioProcessor::loadPortableSettings()
         }
     }
 
+    bool loadedAnyPattern = false;
+
+    for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
+    {
+        const auto prefix = "Pattern"
+                          + juce::String (patternIndex + 1).paddedLeft ('0', 2);
+        patternMidiNotes[static_cast<std::size_t> (patternIndex)].store (
+            juce::jlimit (-1, 127,
+                          values.getValue (prefix + "MidiNote", "-1").getIntValue()));
+
+        if (values.getValue (prefix + "Assigned", "0").getIntValue() == 0)
+            continue;
+
+        const auto storedFile = values.getValue (prefix + "File", {});
+
+        if (storedFile.isEmpty())
+            continue;
+
+        const auto patternFile = resolveStoredPath (storedFile);
+        const auto xml = juce::XmlDocument::parse (patternFile);
+
+        if (xml != nullptr && loadPatternXmlIntoSlot (patternIndex, *xml).wasOk())
+            loadedAnyPattern = true;
+    }
+
+    if (loadedAnyPattern)
+    {
+        int restoredPattern = juce::jlimit (
+            0, numberOfPatterns - 1,
+            values.getValue ("Current", "1").getIntValue() - 1);
+
+        if (! isPatternAssigned (restoredPattern))
+        {
+            restoredPattern = 0;
+
+            while (restoredPattern < numberOfPatterns
+                   && ! isPatternAssigned (restoredPattern))
+                ++restoredPattern;
+
+            restoredPattern = juce::jlimit (0, numberOfPatterns - 1, restoredPattern);
+        }
+
+        currentPatternIndex.store (restoredPattern);
+        applyStoredPattern (restoredPattern);
+    }
+    else
+    {
+        currentPatternIndex.store (0);
+        captureCurrentPattern();
+    }
+
     portableSettingsDirty.store (false);
 }
 
 void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
     state.setAttribute ("version", "1.0.0");
 
@@ -765,6 +1667,19 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     {
         auto* item = browser->createNewChildElement ("FOLDER");
         item->setAttribute ("path", makeStoredPath (juce::File (folder)));
+    }
+
+    auto* sequencer = state.createNewChildElement ("SEQUENCER");
+    sequencer->setAttribute ("enabled", isSequencerEnabled());
+    sequencer->setAttribute ("bars", getPatternBars());
+
+    for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+    {
+        auto* lane = sequencer->createNewChildElement ("LANE");
+        lane->setAttribute ("index", laneIndex);
+        lane->setAttribute ("division", getLaneDivision (laneIndex));
+        lane->setAttribute ("length", getLaneLoopLength (laneIndex));
+        lane->setAttribute ("steps", encodeLaneSteps (laneIndex));
     }
 
     for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
@@ -783,6 +1698,21 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         item->setAttribute ("sample", path.isNotEmpty()
                                        ? makeStoredPath (juce::File (path))
                                        : juce::String());
+    }
+
+    auto* patternsXml = state.createNewChildElement ("PATTERNS");
+    patternsXml->setAttribute ("current", getCurrentPatternIndex());
+
+    for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
+    {
+        auto* slotXml = patternsXml->createNewChildElement ("SLOT");
+        slotXml->setAttribute ("index", patternIndex);
+        slotXml->setAttribute ("assigned", isPatternAssigned (patternIndex));
+        slotXml->setAttribute ("midiNote", getPatternMidiNote (patternIndex));
+
+        if (isPatternAssigned (patternIndex))
+            if (auto patternXml = createPatternXml (patternIndex))
+                slotXml->addChildElement (patternXml.release());
     }
 
     copyXmlToBinary (state, destData);
@@ -809,6 +1739,32 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
 
         const juce::ScopedLock lock (stateLock);
         browserFolders = restoredFolders;
+    }
+
+    if (auto* sequencer = state->getChildByName ("SEQUENCER"))
+    {
+        sequencerEnabled.store (sequencer->getBoolAttribute ("enabled", false));
+        patternBars.store (juce::jlimit (
+            1, maximumPatternBars, sequencer->getIntAttribute ("bars", 1)));
+
+        for (auto* item : sequencer->getChildWithTagNameIterator ("LANE"))
+        {
+            const int laneIndex = item->getIntAttribute ("index", -1);
+
+            if (! isValidPadIndex (laneIndex))
+                continue;
+
+            auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
+            lane.division.store (juce::jlimit (
+                0,
+                sequencerDivisionCount - 1,
+                item->getIntAttribute ("division", 3)));
+            lane.loopLength.store (juce::jlimit (
+                1,
+                getLaneMaximumLoopLength (laneIndex),
+                item->getIntAttribute ("length", 16)));
+            decodeLaneSteps (laneIndex, item->getStringAttribute ("steps"));
+        }
     }
 
     for (auto* item : state->getChildWithTagNameIterator ("PAD"))
@@ -853,6 +1809,59 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
         }
     }
 
+    if (auto* patternsXml = state->getChildByName ("PATTERNS"))
+    {
+        for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
+        {
+            storedPatterns[static_cast<std::size_t> (patternIndex)] = StoredPattern();
+            storedPatterns[static_cast<std::size_t> (patternIndex)].name
+                = "Pattern " + juce::String (patternIndex + 1).paddedLeft ('0', 2);
+            patternMidiNotes[static_cast<std::size_t> (patternIndex)].store (-1);
+        }
+
+        for (auto* slotXml : patternsXml->getChildWithTagNameIterator ("SLOT"))
+        {
+            const int patternIndex = slotXml->getIntAttribute ("index", -1);
+
+            if (! isValidPatternIndex (patternIndex))
+                continue;
+
+            patternMidiNotes[static_cast<std::size_t> (patternIndex)].store (
+                juce::jlimit (-1, 127, slotXml->getIntAttribute ("midiNote", -1)));
+
+            if (slotXml->getBoolAttribute ("assigned", false))
+                if (auto* patternXml = slotXml->getChildByName ("SVDRUMMER_PATTERN"))
+                    loadPatternXmlIntoSlot (patternIndex, *patternXml);
+        }
+
+        int restoredPattern = juce::jlimit (
+            0, numberOfPatterns - 1, patternsXml->getIntAttribute ("current", 0));
+
+        if (! isPatternAssigned (restoredPattern))
+        {
+            restoredPattern = 0;
+
+            while (restoredPattern < numberOfPatterns
+                   && ! isPatternAssigned (restoredPattern))
+                ++restoredPattern;
+
+            if (restoredPattern >= numberOfPatterns)
+            {
+                restoredPattern = 0;
+                currentPatternIndex.store (0);
+                captureCurrentPattern();
+            }
+        }
+
+        currentPatternIndex.store (restoredPattern);
+        applyStoredPattern (restoredPattern);
+    }
+    else
+    {
+        currentPatternIndex.store (0);
+        captureCurrentPattern();
+    }
+
     markPortableSettingsDirty();
 }
 
@@ -870,9 +1879,19 @@ bool SVDrummerAudioProcessor::isValidPadIndex (int padIndex) const noexcept
     return padIndex >= 0 && padIndex < numberOfPads;
 }
 
+bool SVDrummerAudioProcessor::isValidPatternIndex (int patternIndex) const noexcept
+{
+    return patternIndex >= 0 && patternIndex < numberOfPatterns;
+}
+
 bool SVDrummerAudioProcessor::isSupportedAudioFile (const juce::File& file)
 {
     return file.hasFileExtension ("wav;mp3;ogg;flac;aif;aiff");
+}
+
+bool SVDrummerAudioProcessor::isSupportedPatternFile (const juce::File& file)
+{
+    return file.hasFileExtension ("svpattern");
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
