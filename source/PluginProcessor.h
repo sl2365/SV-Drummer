@@ -128,6 +128,7 @@ public:
     std::uint64_t getPatternChangeRevision() const;
     void selectPattern (int patternIndex);
     bool isPatternAssigned (int patternIndex) const;
+    bool patternHasSteps (int patternIndex) const;
     juce::String getPatternName (int patternIndex) const;
     int getPatternMidiNote (int patternIndex) const;
     void setPatternMidiNote (int patternIndex, int midiNote);
@@ -141,6 +142,16 @@ public:
     juce::StringArray getBrowserFolders() const;
     void addBrowserFolder (const juce::File& folder);
     void removeBrowserFolder (const juce::File& folder);
+
+    int getEditorSelectedPad() const noexcept;
+    void setEditorSelectedPad (int padIndex) noexcept;
+    bool isEditorShowingPadSettings() const noexcept;
+    void setEditorShowingPadSettings (bool shouldShow) noexcept;
+    bool isEditorBrowserShowingSamples() const noexcept;
+    void setEditorBrowserShowingSamples (bool shouldShow) noexcept;
+    juce::String getEditorBrowserTreeState (bool samplesBrowser) const;
+    void setEditorBrowserTreeState (bool samplesBrowser,
+                                    const juce::String& state);
 
     juce::File getPortableDataDirectory() const;
     juce::File getPortableSamplesDirectory() const;
@@ -278,6 +289,11 @@ private:
 
     mutable juce::CriticalSection stateLock;
     juce::StringArray browserFolders;
+    juce::String samplesBrowserTreeState;
+    juce::String patternsBrowserTreeState;
+    std::atomic<int> editorSelectedPad { 0 };
+    std::atomic<bool> editorShowingPadSettings { false };
+    std::atomic<bool> editorBrowserShowingSamples { true };
     std::atomic<bool> portableSettingsDirty { false };
 
     void triggerPadOnAudioThread (int padIndex, float velocity,

@@ -63,6 +63,9 @@ public:
         setColour (juce::PopupMenu::backgroundColourId, raisedPanelColour);
         setColour (juce::PopupMenu::textColourId, textColour);
         setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colour (0xff405064));
+        setColour (juce::ScrollBar::backgroundColourId, panelColour);
+        setColour (juce::ScrollBar::trackColourId, raisedPanelColour.darker (0.28f));
+        setColour (juce::ScrollBar::thumbColourId, juce::Colour (0xff3c9fc1));
     }
 
     void drawButtonBackground (juce::Graphics& g,
@@ -312,9 +315,9 @@ public:
         }
 
         g.setColour (colour);
-        g.setFont (juce::FontOptions (isTopLevel ? 14.5f : 14.0f,
-                                     isTopLevel ? juce::Font::bold
-                                                : juce::Font::plain));
+        g.setFont (juce::FontOptions (directory ? 12.5f : 12.0f,
+                                     directory ? juce::Font::bold
+                                               : juce::Font::plain));
         g.drawText (file.getFileName(), 23, 0, width - 25, height,
                     juce::Justification::centredLeft, true);
     }
@@ -454,6 +457,11 @@ public:
         return {};
     }
 
+    bool hasItems() const noexcept
+    {
+        return rootItem.getNumSubItems() > 0;
+    }
+
 private:
     SampleTreeRoot rootItem;
 };
@@ -519,8 +527,12 @@ public:
         emptyLabel.setJustificationType (juce::Justification::centred);
         emptyLabel.setColour (juce::Label::textColourId, mutedTextColour);
 
-        showSamples (true);
-        refresh();
+        showSamples (processor.isEditorBrowserShowingSamples());
+    }
+
+    ~SVDrummerBrowserPanel() override
+    {
+        saveUiState();
     }
 
     void paint (juce::Graphics& g) override
@@ -567,8 +579,16 @@ public:
         emptyLabel.setBounds (area.reduced (16));
     }
 
-    void refresh()
+    void refresh (bool preserveCurrentTreeState = true)
     {
+        std::unique_ptr<juce::XmlElement> treeState;
+
+        if (preserveCurrentTreeState && tree.hasItems())
+            treeState = tree.getOpennessState (true);
+        else
+            treeState = juce::XmlDocument::parse (
+                processor.getEditorBrowserTreeState (showingSamples));
+
         juce::StringArray folders;
 
         if (showingSamples)
@@ -586,12 +606,29 @@ public:
             emptyLabel.setVisible (patternDirectory.findChildFiles (
                 juce::File::findFiles, true, "*.svpattern").isEmpty());
         }
+
+        if (treeState != nullptr)
+            tree.restoreOpennessState (*treeState, true);
+    }
+
+    void saveUiState()
+    {
+        processor.setEditorBrowserShowingSamples (showingSamples);
+
+        if (tree.hasItems())
+            if (const auto state = tree.getOpennessState (true))
+                processor.setEditorBrowserTreeState (
+                    showingSamples, state->toString());
     }
 
 private:
     void showSamples (bool shouldShowSamples)
     {
+        if (initialised)
+            saveUiState();
+
         showingSamples = shouldShowSamples;
+        processor.setEditorBrowserShowingSamples (showingSamples);
         samplesButton.setColour (juce::TextButton::buttonColourId,
                                  showingSamples ? juce::Colour (0xff3e536a)
                                                 : raisedPanelColour);
@@ -619,8 +656,9 @@ private:
         }
 
         resized();
-        refresh();
+        refresh (false);
         repaint();
+        initialised = true;
     }
 
     void chooseFolder()
@@ -657,6 +695,7 @@ private:
     juce::Label emptyLabel;
     std::unique_ptr<juce::FileChooser> folderChooser;
     bool showingSamples = true;
+    bool initialised = false;
 };
 
 class SVDrummerPadComponent final : public juce::Component,
@@ -1914,8 +1953,14 @@ public:
         snapButton.setClickingTogglesState (true);
         snapButton.setTooltip (
             "Constrain marker dragging and scrolling to sample zero crossings");
+        snapButton.setColour (juce::TextButton::buttonColourId,
+                              raisedPanelColour.darker (0.18f));
         snapButton.setColour (juce::TextButton::buttonOnColourId,
                               loopMarkerColour.darker (0.42f));
+        snapButton.setColour (juce::TextButton::textColourOffId,
+                              mutedTextColour);
+        snapButton.setColour (juce::TextButton::textColourOnId,
+                              juce::Colours::white);
         snapButton.onClick = [this]
         {
             if (! updating)
@@ -2215,6 +2260,7 @@ public:
         auto bounds = getLocalBounds().toFloat().reduced (0.5f);
         const bool selected = processor.getCurrentPatternIndex() == patternIndex;
         const bool assigned = processor.isPatternAssigned (patternIndex);
+        const bool hasSteps = processor.patternHasSteps (patternIndex);
         auto background = selected ? juce::Colour (0xff405a73)
                                    : (assigned ? raisedPanelColour
                                                : panelColour.darker (0.12f));
@@ -2244,10 +2290,12 @@ public:
                 : juce::String ("OFF"),
             textArea, juce::Justification::centred, 1);
 
-        if (assigned)
+        if (hasSteps)
         {
-            g.setColour (getPadColour (patternIndex).withAlpha (0.88f));
-            g.fillEllipse (bounds.getRight() - 4.5f, bounds.getY() + 2.0f, 2.5f, 2.5f);
+            constexpr float dotSize = 5.5f;
+            g.setColour (juce::Colour (0xffdc7d83));
+            g.fillEllipse (bounds.getRight() - dotSize - 2.5f,
+                           bounds.getY() + 2.5f, dotSize, dotSize);
         }
     }
 
@@ -2540,8 +2588,10 @@ public:
         barScroll.setAutoHide (false);
         barScroll.setSingleStepSize (1.0);
         barScroll.setColour (juce::ScrollBar::backgroundColourId, panelColour);
-        barScroll.setColour (juce::ScrollBar::thumbColourId, juce::Colour (0xff46515e));
-        barScroll.setColour (juce::ScrollBar::trackColourId, raisedPanelColour);
+        barScroll.setColour (juce::ScrollBar::thumbColourId,
+                             juce::Colour (0xff3c9fc1));
+        barScroll.setColour (juce::ScrollBar::trackColourId,
+                             raisedPanelColour.darker (0.28f));
 
         addAndMakeVisible (enableButton);
         addAndMakeVisible (midiModeLabel);
@@ -2613,9 +2663,16 @@ public:
             const float barWidth = static_cast<float> (rulerSteps.getWidth())
                                  / static_cast<float> (juce::jmax (1, barsShown));
 
+            g.setColour (lineColour.brighter (0.08f));
+            g.drawHorizontalLine (rulerBounds.getY(),
+                                  0.5f, static_cast<float> (getWidth()) - 0.5f);
+            g.drawHorizontalLine (rulerBounds.getBottom() - 1,
+                                  0.5f, static_cast<float> (getWidth()) - 0.5f);
+
             g.setColour (mutedTextColour.brighter (0.12f));
             g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
-            g.drawText ("LANE", rulerLabel, juce::Justification::centredLeft);
+            g.drawText ("LANE", rulerLabel.reduced (4, 0),
+                        juce::Justification::centred);
 
             for (int bar = 0; bar < barsShown; ++bar)
             {
@@ -2669,7 +2726,7 @@ public:
         placeKnob (lengthLabel, lengthSlider);
         placeKnob (viewLabel, viewSlider);
         laneButton.setBounds (controls.removeFromLeft (72)
-                                      .withY (controlY + 1).withHeight (27));
+                                      .withY (controlY + 6).withHeight (27));
         controls.removeFromLeft (8);
         placeKnob (divisionLabel, divisionSlider);
         placeKnob (loopLabel, loopLengthSlider);
@@ -2677,7 +2734,9 @@ public:
         area.removeFromTop (1);
         patternBounds = area.removeFromBottom (30);
         area.removeFromBottom (4);
-        barScroll.setBounds (area.removeFromBottom (12));
+        auto scrollRow = area.removeFromBottom (12);
+        scrollRow.removeFromLeft (laneLabelWidth + 4);
+        barScroll.setBounds (scrollRow);
         area.removeFromBottom (3);
         rulerBounds = area.removeFromTop (17);
         sequenceRowsBounds = area;
@@ -3018,16 +3077,24 @@ private:
             g.setColour (lane == selectedLane ? accent.withAlpha (0.72f)
                                               : accent.withAlpha (0.38f));
             g.fillRoundedRectangle (label.reduced (0.0f, 0.6f), 1.5f);
+
+            auto laneNumber = label.reduced (2.0f, 1.8f);
+            laneNumber.setWidth (23.0f);
+            auto divisionText = label;
+            divisionText.setLeft (laneNumber.getRight() + 4.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.50f));
+            g.fillRoundedRectangle (laneNumber, 1.5f);
             g.setColour (juce::Colours::white.withAlpha (0.90f));
             g.setFont (juce::FontOptions (
                 juce::jmax (9.0f, juce::jmin (10.5f, rowHeight * 0.62f)),
                 juce::Font::bold));
+            g.drawText (juce::String (lane + 1), laneNumber.toNearestInt(),
+                        juce::Justification::centred, false);
             g.drawFittedText (
-                juce::String (lane + 1) + "  "
-                    + SVDrummerAudioProcessor::getSequencerDivisionName (
-                        processor.getLaneDivision (lane)),
-                label.toNearestInt().reduced (3, 0),
-                juce::Justification::centredLeft, 1);
+                SVDrummerAudioProcessor::getSequencerDivisionName (
+                    processor.getLaneDivision (lane)),
+                divisionText.toNearestInt().reduced (2, 0),
+                juce::Justification::centred, 1);
 
             const int division = processor.getLaneDivision (lane);
             const int stepsPerBar = SVDrummerAudioProcessor::getSequencerStepsPerBar (division);
@@ -3220,7 +3287,13 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
     addAndMakeVisible (sequencerViewButton);
     addAndMakeVisible (settingsViewButton);
 
-    showSequencerView();
+    selectedPad = processor.getEditorSelectedPad();
+    sequencerPanel->setSelectedLane (selectedPad);
+
+    if (processor.isEditorShowingPadSettings())
+        showPadSettings (selectedPad);
+    else
+        showSequencerView();
 
     setResizable (true, true);
     setResizeLimits (baseEditorWidth * 3 / 4, baseEditorHeight * 3 / 4,
@@ -3241,6 +3314,7 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
 SVDrummerAudioProcessorEditor::~SVDrummerAudioProcessorEditor()
 {
     stopTimer();
+    browserPanel->saveUiState();
     saveZoomSetting();
     processor.flushPortableSettingsIfNeeded();
     setLookAndFeel (nullptr);
@@ -3268,7 +3342,7 @@ void SVDrummerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (mutedTextColour);
     g.setFont (11.5f);
-    g.drawFittedText ("16-PAD SAMPLE PLAYER  -  STAGE 6.0",
+    g.drawFittedText ("16-PAD SAMPLE PLAYER  -  STAGE 6.1",
                       header, juce::Justification::centredRight, 1);
     g.restoreState();
 }
@@ -3353,6 +3427,7 @@ void SVDrummerAudioProcessorEditor::timerCallback()
     if (++portableSettingsTimerTicks >= 20)
     {
         portableSettingsTimerTicks = 0;
+        browserPanel->saveUiState();
         processor.flushPortableSettingsIfNeeded();
     }
 
@@ -3408,6 +3483,7 @@ void SVDrummerAudioProcessorEditor::saveZoomSetting() const
 void SVDrummerAudioProcessorEditor::showSequencerView()
 {
     showingSettings = false;
+    processor.setEditorShowingPadSettings (false);
     updatePadSelection (sequencerPanel->getSelectedLane());
 
     sequencerPanel->setVisible (true);
@@ -3420,6 +3496,7 @@ void SVDrummerAudioProcessorEditor::showPadSettings (int padIndex)
     selectedPad = juce::jlimit (0, SVDrummerAudioProcessor::numberOfPads - 1,
                                padIndex);
     showingSettings = true;
+    processor.setEditorShowingPadSettings (true);
     sequencerPanel->setSelectedLane (selectedPad);
     updatePadSelection (selectedPad);
 
@@ -3448,6 +3525,7 @@ void SVDrummerAudioProcessorEditor::updatePadSelection (int padIndex)
 {
     selectedPad = juce::jlimit (
         0, SVDrummerAudioProcessor::numberOfPads - 1, padIndex);
+    processor.setEditorSelectedPad (selectedPad);
 
     for (int index = 0; index < SVDrummerAudioProcessor::numberOfPads; ++index)
         padComponents[static_cast<std::size_t> (index)]->setSelected (

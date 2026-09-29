@@ -1,4 +1,4 @@
-# SV-Drummer Stage 6.0
+# SV-Drummer Stage 6.1
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -231,6 +231,19 @@ earlier voice from that pad. Chokes honour the trigger's sample offset within
 the current audio block. Choke assignments are stored with portable settings,
 host state and version 3 `.svpattern` files, and double-click returns the knob
 to the value captured with the current pattern or host preset.
+
+Stage 6.1 preserves the selected Sequencer/Pad Settings view, selected pad/lane,
+browser Samples/Patterns mode, expanded folders, selected browser item and
+browser scroll position while PHI changes focus or recreates the plug-in editor.
+
+The Browser uses a smaller, smoother row font. The Sequencer scrollbar now
+matches the Browser scrollbar and begins beside the first step rather than under
+the lane labels. The LANE button aligns vertically with MIDI MODE; two divider
+lines isolate the BAR ruler from the editing controls and step grid. The ruler's
+LANE heading is centred over the lane column, while each lane number has its own
+50%-black frame and its DIV value is centred separately. Pattern slots containing
+steps use a larger uniform pastel-red indicator dot. SNAP's inactive styling now
+matches the inactive REVERSE and LOOP buttons.
 
 ## Pattern buttons
 

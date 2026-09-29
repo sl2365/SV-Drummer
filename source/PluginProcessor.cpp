@@ -1372,6 +1372,42 @@ bool SVDrummerAudioProcessor::isPatternAssigned (int patternIndex) const
         && storedPatterns[static_cast<std::size_t> (patternIndex)].assigned;
 }
 
+bool SVDrummerAudioProcessor::patternHasSteps (int patternIndex) const
+{
+    if (! isValidPatternIndex (patternIndex))
+        return false;
+
+    if (patternIndex == currentPatternIndex.load())
+    {
+        for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+            for (int step = 0;
+                 step < getLaneMaximumLoopLength (laneIndex);
+                 ++step)
+                if (getSequenceStepVelocity (laneIndex, step) > 0)
+                    return true;
+
+        return false;
+    }
+
+    const auto& stored = storedPatterns[static_cast<std::size_t> (patternIndex)];
+
+    if (! stored.assigned)
+        return false;
+
+    for (const auto& lane : stored.lanes)
+    {
+        const int relevantSteps = juce::jlimit (
+            1, maximumStepsPerLane,
+            stored.bars * getSequencerStepsPerBar (lane.division));
+
+        for (int step = 0; step < relevantSteps; ++step)
+            if (lane.stepVelocities[static_cast<std::size_t> (step)] > 0)
+                return true;
+    }
+
+    return false;
+}
+
 juce::String SVDrummerAudioProcessor::getPatternName (int patternIndex) const
 {
     if (! isValidPatternIndex (patternIndex))
@@ -1809,6 +1845,55 @@ void SVDrummerAudioProcessor::removeBrowserFolder (const juce::File& folder)
 
     if (changed)
         markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getEditorSelectedPad() const noexcept
+{
+    return juce::jlimit (0, numberOfPads - 1, editorSelectedPad.load());
+}
+
+void SVDrummerAudioProcessor::setEditorSelectedPad (int padIndex) noexcept
+{
+    editorSelectedPad.store (juce::jlimit (0, numberOfPads - 1, padIndex));
+}
+
+bool SVDrummerAudioProcessor::isEditorShowingPadSettings() const noexcept
+{
+    return editorShowingPadSettings.load();
+}
+
+void SVDrummerAudioProcessor::setEditorShowingPadSettings (bool shouldShow) noexcept
+{
+    editorShowingPadSettings.store (shouldShow);
+}
+
+bool SVDrummerAudioProcessor::isEditorBrowserShowingSamples() const noexcept
+{
+    return editorBrowserShowingSamples.load();
+}
+
+void SVDrummerAudioProcessor::setEditorBrowserShowingSamples (
+    bool shouldShow) noexcept
+{
+    editorBrowserShowingSamples.store (shouldShow);
+}
+
+juce::String SVDrummerAudioProcessor::getEditorBrowserTreeState (
+    bool samplesBrowser) const
+{
+    const juce::ScopedLock lock (stateLock);
+    return samplesBrowser ? samplesBrowserTreeState : patternsBrowserTreeState;
+}
+
+void SVDrummerAudioProcessor::setEditorBrowserTreeState (
+    bool samplesBrowser, const juce::String& state)
+{
+    const juce::ScopedLock lock (stateLock);
+
+    if (samplesBrowser)
+        samplesBrowserTreeState = state;
+    else
+        patternsBrowserTreeState = state;
 }
 
 juce::File SVDrummerAudioProcessor::getPortableDataDirectory() const
