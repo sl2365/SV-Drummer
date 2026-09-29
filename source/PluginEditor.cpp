@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -14,6 +15,8 @@ const juce::Colour raisedPanelColour (0xff20242a);
 const juce::Colour lineColour (0xff343940);
 const juce::Colour textColour (0xffe8ebef);
 const juce::Colour mutedTextColour (0xff8d949e);
+const juce::Colour trimMarkerColour (0xffef5a5a);
+const juce::Colour loopMarkerColour (0xff23838a);
 constexpr int baseEditorWidth = 1280;
 constexpr int baseEditorHeight = 800;
 
@@ -663,11 +666,13 @@ class SVDrummerPadComponent final : public juce::Component,
 public:
     SVDrummerPadComponent (SVDrummerAudioProcessor& owner,
                            int padNumber,
-                           std::function<void (int)> settingsCallback)
+                           std::function<void (int)> settingsCallback,
+                           std::function<void (int)> selectionCallback)
         : processor (owner),
           padIndex (padNumber),
           accent (getPadColour (padNumber)),
-          onSettingsRequested (std::move (settingsCallback))
+          onSettingsRequested (std::move (settingsCallback)),
+          onSelectionRequested (std::move (selectionCallback))
     {
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
         lastActivityCounter = processor.getPadActivityCounter (padIndex);
@@ -704,8 +709,8 @@ public:
         g.fillRect (footer);
 
         auto titleRow = getLocalBounds().reduced (7).removeFromTop (22);
-        auto indicatorBounds = titleRow.removeFromRight (22).toFloat()
-                                       .withSizeKeepingCentre (20.0f, 20.0f);
+        const auto indicatorBounds = getIndicatorBounds().toFloat();
+        titleRow.removeFromRight (22);
         titleRow.removeFromRight (4);
 
         const auto sampleName = processor.getPadDisplayName (padIndex);
@@ -714,7 +719,7 @@ public:
         g.drawText (sampleName, titleRow,
                     juce::Justification::centredLeft, true);
 
-        if (editingSelected)
+        if (selected)
         {
             g.setColour (accent);
             g.fillEllipse (indicatorBounds);
@@ -725,10 +730,10 @@ public:
             g.fillEllipse (indicatorBounds);
         }
 
-        g.setColour (accent.withAlpha (editingSelected ? 1.0f : 0.72f));
-        g.drawEllipse (indicatorBounds.reduced (0.6f), editingSelected ? 1.5f : 1.1f);
-        g.setColour (editingSelected ? juce::Colours::white
-                                     : mutedTextColour.brighter (0.08f));
+        g.setColour (accent.withAlpha (selected ? 1.0f : 0.72f));
+        g.drawEllipse (indicatorBounds.reduced (0.6f), selected ? 1.5f : 1.1f);
+        g.setColour (selected ? juce::Colours::white
+                              : mutedTextColour.brighter (0.08f));
         g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
         g.drawText (juce::String (padIndex + 1), indicatorBounds.toNearestInt(),
                     juce::Justification::centred, false);
@@ -740,6 +745,14 @@ public:
     void mouseDown (const juce::MouseEvent& event) override
     {
         const auto point = event.getPosition();
+
+        if (getIndicatorBounds().contains (point))
+        {
+            if (onSelectionRequested)
+                onSelectionRequested (padIndex);
+
+            return;
+        }
 
         if (noteBounds.contains (point))
         {
@@ -851,16 +864,22 @@ public:
         repaint();
     }
 
-    void setEditingSelected (bool shouldBeSelected)
+    void setSelected (bool shouldBeSelected)
     {
-        if (editingSelected != shouldBeSelected)
+        if (selected != shouldBeSelected)
         {
-            editingSelected = shouldBeSelected;
+            selected = shouldBeSelected;
             repaint();
         }
     }
 
 private:
+    juce::Rectangle<int> getIndicatorBounds() const
+    {
+        auto titleRow = getLocalBounds().reduced (7).removeFromTop (22);
+        return titleRow.removeFromRight (22).withSizeKeepingCentre (20, 20);
+    }
+
     juce::Rectangle<int> getFooterBounds()
     {
         return getLocalBounds().removeFromBottom (juce::jmax (22, getHeight() / 5));
@@ -1022,6 +1041,7 @@ private:
     int padIndex = 0;
     juce::Colour accent;
     std::function<void (int)> onSettingsRequested;
+    std::function<void (int)> onSelectionRequested;
     juce::Rectangle<int> noteBounds;
     juce::Rectangle<int> muteBounds;
     juce::Rectangle<int> soloBounds;
@@ -1029,19 +1049,30 @@ private:
     std::uint64_t lastActivityCounter = 0;
     float flashAmount = 0.0f;
     bool dropHighlight = false;
-    bool editingSelected = false;
+    bool selected = false;
 };
 
 class SVDrummerWaveformEditor final : public juce::Component,
                                       public juce::SettableTooltipClient
 {
+    enum class Marker
+    {
+        none,
+        sampleStart,
+        sampleEnd,
+        loopStart,
+        loopEnd
+    };
+
 public:
     explicit SVDrummerWaveformEditor (SVDrummerAudioProcessor& owner)
         : processor (owner)
     {
-        setTooltip ("Click the waveform to audition; drag an S/E marker; "
+        setTooltip ("Click the waveform to audition; drag S/E trim markers "
+                    "or LS/LE loop markers; "
+                    "mouse-wheel a sample-position box for exact adjustment; "
                     "use the mouse wheel to zoom; drag the overview bar to "
-                    "scroll; double-click to reset the sample range and view");
+                    "scroll; double-click to reset all markers and the view");
     }
 
     void setPadIndex (int newPadIndex)
@@ -1067,16 +1098,42 @@ public:
         g.setColour (lineColour);
         g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 1.0f);
 
-        const float sampleStart = processor.getPadSampleStart (padIndex);
-        const float sampleEnd = processor.getPadSampleEnd (padIndex);
-        auto header = getLocalBounds().reduced (8).removeFromTop (18);
-        g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
-        g.setColour (textColour);
-        g.drawText ("START  " + juce::String (sampleStart * 100.0f, 1) + "%",
-                    header.removeFromLeft (header.getWidth() / 2),
-                    juce::Justification::centredLeft);
-        g.drawText ("END  " + juce::String (sampleEnd * 100.0f, 1) + "%",
-                    header, juce::Justification::centredRight);
+        const float sampleStart = markerPosition (Marker::sampleStart);
+        const float sampleEnd = markerPosition (Marker::sampleEnd);
+        const bool loopEnabled = processor.isPadLoopEnabled (padIndex);
+        const float loopStart = markerPosition (Marker::loopStart);
+        const float loopEnd = markerPosition (Marker::loopEnd);
+        const auto drawMarkerSetting = [&] (Marker marker,
+                                             const juce::String& label,
+                                             juce::Colour colour,
+                                             bool enabled)
+        {
+            const auto settingBounds = markerSettingBounds (marker);
+            auto labelBounds = settingBounds;
+            auto valueBounds = markerValueBounds (marker);
+            labelBounds.setRight (valueBounds.getX() - 4.0f);
+
+            g.setColour (enabled ? colour : mutedTextColour.darker (0.20f));
+            g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+            g.drawText (label, labelBounds.toNearestInt(),
+                        juce::Justification::centredRight, false);
+            g.setColour (raisedPanelColour.darker (0.24f));
+            g.fillRoundedRectangle (valueBounds, 2.5f);
+            g.setColour ((enabled ? colour : mutedTextColour).withAlpha (0.72f));
+            g.drawRoundedRectangle (valueBounds.reduced (0.5f), 2.5f, 1.0f);
+            g.setColour (enabled ? textColour : mutedTextColour.darker (0.16f));
+            g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+            g.drawText (juce::String (markerSamplePosition (marker)),
+                        valueBounds.toNearestInt(),
+                        juce::Justification::centred, false);
+        };
+
+        drawMarkerSetting (Marker::sampleStart, "START", trimMarkerColour, true);
+        drawMarkerSetting (Marker::sampleEnd, "END", trimMarkerColour, true);
+        drawMarkerSetting (Marker::loopStart, "L-START", loopMarkerColour,
+                           loopEnabled);
+        drawMarkerSetting (Marker::loopEnd, "L-END", loopMarkerColour,
+                           loopEnabled);
 
         const auto waveformBounds = getWaveformBounds();
         const auto overviewBounds = getOverviewBounds();
@@ -1114,6 +1171,30 @@ public:
                 waveformBounds.getHeight()));
         }
 
+        if (loopEnabled)
+        {
+            const float visibleLoopStart = juce::jmax (viewStart, loopStart);
+            const float visibleLoopEnd = juce::jmin (viewEnd, loopEnd);
+
+            if (visibleLoopEnd > visibleLoopStart)
+            {
+                const float loopStartX = samplePositionToX (
+                    visibleLoopStart, waveformBounds);
+                const float loopEndX = samplePositionToX (
+                    visibleLoopEnd, waveformBounds);
+                const auto loopArea = juce::Rectangle<float> (
+                    loopStartX, waveformBounds.getY(),
+                    juce::jmax (0.0f, loopEndX - loopStartX),
+                    waveformBounds.getHeight());
+                g.setColour (loopMarkerColour.withAlpha (0.10f));
+                g.fillRect (loopArea);
+                g.setColour (loopMarkerColour.withAlpha (0.54f));
+                g.drawHorizontalLine (
+                    juce::roundToInt (waveformBounds.getY() + 1.0f),
+                    loopArea.getX(), loopArea.getRight());
+            }
+        }
+
         g.setColour (lineColour.withAlpha (0.34f));
 
         for (int guide = 1; guide < 4; ++guide)
@@ -1144,25 +1225,18 @@ public:
                     waveformBounds.getRight(), waveformBounds.getCentreY(),
                     1.15f);
 
-        constexpr float flagWidth = 15.0f;
-        constexpr float flagHeight = 14.0f;
-        const auto drawMarker = [&] (float samplePosition,
+        const auto drawMarker = [&] (Marker marker,
                                      const juce::String& text,
-                                     bool startMarker)
+                                     juce::Colour markerColour)
         {
+            const float samplePosition = markerPosition (marker);
+
             if (samplePosition < viewStart || samplePosition > viewEnd)
                 return;
 
             const float markerX = samplePositionToX (samplePosition, waveformBounds);
-            const float flagX = startMarker
-                                  ? juce::jmin (markerX,
-                                                waveformBounds.getRight() - flagWidth)
-                                  : juce::jmax (waveformBounds.getX(),
-                                                markerX - flagWidth);
-            const auto flag = juce::Rectangle<float> (
-                flagX, waveformBounds.getBottom() - flagHeight,
-                flagWidth, flagHeight);
-            g.setColour (accent.brighter (0.30f));
+            const auto flag = markerFlagBounds (marker);
+            g.setColour (markerColour);
             g.drawVerticalLine (juce::roundToInt (markerX),
                                 waveformBounds.getY(), waveformBounds.getBottom());
             g.fillRoundedRectangle (flag, 2.0f);
@@ -1171,8 +1245,14 @@ public:
             g.drawText (text, flag, juce::Justification::centred);
         };
 
-        drawMarker (sampleStart, "S", true);
-        drawMarker (sampleEnd, "E", false);
+        drawMarker (Marker::sampleStart, "S", trimMarkerColour);
+        drawMarker (Marker::sampleEnd, "E", trimMarkerColour);
+
+        if (loopEnabled)
+        {
+            drawMarker (Marker::loopStart, "LS", loopMarkerColour);
+            drawMarker (Marker::loopEnd, "LE", loopMarkerColour);
+        }
 
         g.setColour (backgroundColour.darker (0.18f));
         g.fillRoundedRectangle (overviewBounds, 2.0f);
@@ -1212,6 +1292,12 @@ public:
             return;
         }
 
+        if (markerValueAt (event.position) != Marker::none)
+        {
+            setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+            return;
+        }
+
         if (getOverviewBounds().contains (event.position))
         {
             setMouseCursor (juce::MouseCursor::DraggingHandCursor);
@@ -1220,7 +1306,7 @@ public:
 
         if (getWaveformBounds().contains (event.position))
         {
-            setMouseCursor (isNearMarker (event.position.x)
+            setMouseCursor (markerAt (event.position) != Marker::none
                                 ? juce::MouseCursor::LeftRightResizeCursor
                                 : juce::MouseCursor::PointingHandCursor);
             return;
@@ -1240,6 +1326,7 @@ public:
         if (overview.contains (event.position))
         {
             draggingMarker = false;
+            activeMarker = Marker::none;
             draggingOverview = true;
             const auto overviewContent = getOverviewContentBounds();
 
@@ -1271,11 +1358,10 @@ public:
         if (event.getNumberOfClicks() > 1)
             return;
 
-        const auto distances = getMarkerDistances (event.position.x);
+        activeMarker = markerAt (event.position);
 
-        if (juce::jmin (distances.first, distances.second) <= markerGrabWidth)
+        if (activeMarker != Marker::none)
         {
-            draggingStart = distances.first <= distances.second;
             draggingMarker = true;
             updateMarker (event.position.x);
         }
@@ -1304,11 +1390,21 @@ public:
     {
         draggingMarker = false;
         draggingOverview = false;
+        activeMarker = Marker::none;
     }
 
     void mouseWheelMove (const juce::MouseEvent& event,
                          const juce::MouseWheelDetails& wheel) override
     {
+        const auto valueMarker = markerValueAt (event.position);
+
+        if (valueMarker != Marker::none && wheel.deltaY != 0.0f)
+        {
+            nudgeMarker (valueMarker, wheel.deltaY > 0.0f ? 1 : -1);
+            repaint();
+            return;
+        }
+
         const auto bounds = getWaveformBounds();
 
         if (processor.getPadSample (padIndex) == nullptr
@@ -1343,17 +1439,41 @@ public:
             && ! getOverviewBounds().contains (event.position))
             return;
 
-        processor.setPadSampleStart (padIndex, 0.0f);
-        processor.setPadSampleEnd (padIndex, 1.0f);
+        processor.resetPadSampleMarkers (padIndex);
         resetView();
         repaint();
     }
 
 private:
+    juce::Rectangle<float> getMarkerHeaderBounds() const
+    {
+        auto area = getLocalBounds().toFloat().reduced (8.0f);
+        return area.removeFromTop (markerHeaderHeight);
+    }
+
+    juce::Rectangle<float> markerSettingBounds (Marker marker) const
+    {
+        const int index = marker == Marker::sampleStart ? 0
+                        : marker == Marker::sampleEnd ? 1
+                        : marker == Marker::loopStart ? 2 : 3;
+        const auto header = getMarkerHeaderBounds();
+        const float settingWidth = header.getWidth() * 0.25f;
+        return { header.getX() + settingWidth * static_cast<float> (index),
+                 header.getY(), settingWidth, header.getHeight() };
+    }
+
+    juce::Rectangle<float> markerValueBounds (Marker marker) const
+    {
+        auto setting = markerSettingBounds (marker).reduced (3.0f, 2.0f);
+        const float valueWidth = juce::jlimit (
+            74.0f, 108.0f, setting.getWidth() * 0.52f);
+        return setting.removeFromRight (valueWidth);
+    }
+
     juce::Rectangle<float> getWaveformBounds() const
     {
         auto area = getLocalBounds().toFloat().reduced (8.0f);
-        area.removeFromTop (20.0f);
+        area.removeFromTop (markerHeaderHeight + 2.0f);
         area.removeFromBottom (overviewHeight + overviewGap);
         return area;
     }
@@ -1361,7 +1481,7 @@ private:
     juce::Rectangle<float> getOverviewBounds() const
     {
         auto area = getLocalBounds().toFloat().reduced (8.0f);
-        area.removeFromTop (20.0f);
+        area.removeFromTop (markerHeaderHeight + 2.0f);
         return area.removeFromBottom (overviewHeight);
     }
 
@@ -1389,91 +1509,75 @@ private:
         float fillAlpha,
         float lineAlpha)
     {
-        if (sample.waveform.empty() || bounds.isEmpty())
+        const auto& audio = sample.audio;
+        const int sampleCount = audio.getNumSamples();
+        const int channelCount = audio.getNumChannels();
+
+        if (sampleCount <= 0 || channelCount <= 0 || bounds.isEmpty())
             return;
 
-        const int pointCount = static_cast<int> (sample.waveform.size());
-        const int firstVisiblePoint = juce::jlimit (
-            0, pointCount - 1,
-            static_cast<int> (std::floor (
-                normalisedStart * static_cast<float> (pointCount - 1))));
-        const int lastVisiblePoint = juce::jlimit (
-            firstVisiblePoint + 1, pointCount,
-            static_cast<int> (std::ceil (
-                normalisedEnd * static_cast<float> (pointCount))));
-        const int visiblePointCount = lastVisiblePoint - firstVisiblePoint;
-        const int columns = juce::jmax (
-            2, juce::jmin (juce::roundToInt (bounds.getWidth()),
-                           juce::jmax (2, visiblePointCount)));
+        const float start = juce::jlimit (0.0f, 1.0f, normalisedStart);
+        const float end = juce::jlimit (start, 1.0f, normalisedEnd);
+        const int pointCount = juce::jmax (
+            2, juce::roundToInt (bounds.getWidth() * 2.0f));
         const float centreY = bounds.getCentreY();
         const float halfHeight = bounds.getHeight() * 0.46f;
 
-        juce::Path positiveFill;
-        juce::Path negativeFill;
-        juce::Path positiveLine;
-        juce::Path negativeLine;
+        juce::Path fillPath;
+        juce::Path linePath;
         float finalX = bounds.getX();
 
-        for (int column = 0; column < columns; ++column)
+        for (int point = 0; point < pointCount; ++point)
         {
-            const int firstPoint = firstVisiblePoint
-                                 + column * visiblePointCount / columns;
-            const int lastPoint = juce::jmax (
-                firstPoint + 1,
-                firstVisiblePoint
-                    + (column + 1) * visiblePointCount / columns);
-            float minimum = 1.0f;
-            float maximum = -1.0f;
+            const float position = static_cast<float> (point)
+                                 / static_cast<float> (pointCount - 1);
+            const double sourcePosition = static_cast<double> (
+                start + (end - start) * position)
+                * static_cast<double> (sampleCount - 1);
+            const int firstSample = juce::jlimit (
+                0, sampleCount - 1,
+                static_cast<int> (std::floor (sourcePosition)));
+            const int secondSample = juce::jmin (sampleCount - 1,
+                                                 firstSample + 1);
+            const float fraction = static_cast<float> (
+                sourcePosition - static_cast<double> (firstSample));
+            float value = 0.0f;
 
-            for (int point = firstPoint;
-                 point < juce::jmin (lastVisiblePoint, lastPoint);
-                 ++point)
+            for (int channel = 0; channel < channelCount; ++channel)
             {
-                const auto range = sample.waveform[static_cast<std::size_t> (point)];
-                minimum = juce::jmin (minimum, range.getStart());
-                maximum = juce::jmax (maximum, range.getEnd());
+                value += juce::jmap (
+                    fraction,
+                    audio.getSample (channel, firstSample),
+                    audio.getSample (channel, secondSample));
             }
 
-            const float position = static_cast<float> (column)
-                                 / static_cast<float> (columns - 1);
+            value = juce::jlimit (
+                -1.0f, 1.0f, value / static_cast<float> (channelCount));
             const float x = bounds.getX() + bounds.getWidth() * position;
-            const float positiveY = centreY
-                                  - juce::jmax (0.0f, maximum) * halfHeight;
-            const float negativeY = centreY
-                                  - juce::jmin (0.0f, minimum) * halfHeight;
+            const float y = centreY - value * halfHeight;
 
-            if (column == 0)
+            if (point == 0)
             {
-                positiveFill.startNewSubPath (x, centreY);
-                positiveFill.lineTo (x, positiveY);
-                negativeFill.startNewSubPath (x, centreY);
-                negativeFill.lineTo (x, negativeY);
-                positiveLine.startNewSubPath (x, positiveY);
-                negativeLine.startNewSubPath (x, negativeY);
+                fillPath.startNewSubPath (x, centreY);
+                fillPath.lineTo (x, y);
+                linePath.startNewSubPath (x, y);
             }
             else
             {
-                positiveFill.lineTo (x, positiveY);
-                negativeFill.lineTo (x, negativeY);
-                positiveLine.lineTo (x, positiveY);
-                negativeLine.lineTo (x, negativeY);
+                fillPath.lineTo (x, y);
+                linePath.lineTo (x, y);
             }
 
             finalX = x;
         }
 
-        positiveFill.lineTo (finalX, centreY);
-        positiveFill.closeSubPath();
-        negativeFill.lineTo (finalX, centreY);
-        negativeFill.closeSubPath();
+        fillPath.lineTo (finalX, centreY);
+        fillPath.closeSubPath();
 
         g.setColour (colour.withAlpha (fillAlpha));
-        g.fillPath (positiveFill);
-        g.fillPath (negativeFill);
+        g.fillPath (fillPath);
         g.setColour (colour.withAlpha (lineAlpha));
-        const juce::PathStrokeType stroke (1.0f);
-        g.strokePath (positiveLine, stroke);
-        g.strokePath (negativeLine, stroke);
+        g.strokePath (linePath, juce::PathStrokeType (1.0f));
     }
 
     void moveViewToOverviewPosition (float relativeMouse)
@@ -1493,33 +1597,197 @@ private:
         if (bounds.isEmpty())
             return;
 
-        const float position = juce::jlimit (
+        const float normalisedPosition = juce::jlimit (
             0.0f, 1.0f,
             viewStart + (viewEnd - viewStart)
                             * (mouseX - bounds.getX()) / bounds.getWidth());
+        const int lastSample = juce::jmax (
+            0, processor.getPadSampleLength (padIndex) - 1);
+        const int samplePosition = juce::jlimit (
+            0, lastSample,
+            juce::roundToInt (
+                normalisedPosition * static_cast<float> (lastSample)));
 
-        if (draggingStart)
-            processor.setPadSampleStart (padIndex, position);
-        else
-            processor.setPadSampleEnd (padIndex, position);
+        switch (activeMarker)
+        {
+            case Marker::sampleStart:
+                processor.setPadSampleStart (padIndex, samplePosition);
+                break;
+            case Marker::sampleEnd:
+                processor.setPadSampleEnd (padIndex, samplePosition);
+                break;
+            case Marker::loopStart:
+                processor.setPadLoopStart (padIndex, samplePosition);
+                break;
+            case Marker::loopEnd:
+                processor.setPadLoopEnd (padIndex, samplePosition);
+                break;
+            case Marker::none:
+            default:
+                break;
+        }
 
         repaint();
     }
 
-    std::pair<float, float> getMarkerDistances (float mouseX) const
+    Marker markerValueAt (juce::Point<float> position) const
     {
-        const auto bounds = getWaveformBounds();
-        const float startX = samplePositionToX (
-            processor.getPadSampleStart (padIndex), bounds);
-        const float endX = samplePositionToX (
-            processor.getPadSampleEnd (padIndex), bounds);
-        return { std::abs (mouseX - startX), std::abs (mouseX - endX) };
+        for (const auto marker : { Marker::sampleStart, Marker::sampleEnd,
+                                   Marker::loopStart, Marker::loopEnd })
+            if (markerValueBounds (marker).contains (position))
+                return marker;
+
+        return Marker::none;
     }
 
-    bool isNearMarker (float mouseX) const
+    void nudgeMarker (Marker marker, int direction)
     {
-        const auto distances = getMarkerDistances (mouseX);
-        return juce::jmin (distances.first, distances.second) <= markerGrabWidth;
+        const int amount = direction >= 0 ? 1 : -1;
+        const int requested = markerSamplePosition (marker) + amount;
+
+        switch (marker)
+        {
+            case Marker::sampleStart:
+                processor.setPadSampleStart (
+                    padIndex, requested, amount);
+                break;
+            case Marker::sampleEnd:
+                processor.setPadSampleEnd (
+                    padIndex, requested, amount);
+                break;
+            case Marker::loopStart:
+                processor.setPadLoopStart (
+                    padIndex, requested, amount);
+                break;
+            case Marker::loopEnd:
+                processor.setPadLoopEnd (
+                    padIndex, requested, amount);
+                break;
+            case Marker::none:
+            default:
+                break;
+        }
+    }
+
+    int markerSamplePosition (Marker marker) const
+    {
+        switch (marker)
+        {
+            case Marker::sampleStart:
+                return processor.getPadSampleStart (padIndex);
+            case Marker::sampleEnd:
+                return processor.getPadSampleEnd (padIndex);
+            case Marker::loopStart:
+                return processor.getPadLoopStart (padIndex);
+            case Marker::loopEnd:
+                return processor.getPadLoopEnd (padIndex);
+            case Marker::none:
+            default:
+                return 0;
+        }
+    }
+
+    float markerPosition (Marker marker) const
+    {
+        const int lastSample = processor.getPadSampleLength (padIndex) - 1;
+
+        if (lastSample <= 0)
+            return 0.0f;
+
+        return static_cast<float> (markerSamplePosition (marker))
+             / static_cast<float> (lastSample);
+    }
+
+    juce::Rectangle<float> markerFlagBounds (Marker marker) const
+    {
+        if (marker == Marker::none
+            || ((marker == Marker::loopStart || marker == Marker::loopEnd)
+                && ! processor.isPadLoopEnabled (padIndex)))
+            return {};
+
+        const auto waveformBounds = getWaveformBounds();
+        const float position = markerPosition (marker);
+
+        if (position < viewStart || position > viewEnd)
+            return {};
+
+        const float markerX = samplePositionToX (position, waveformBounds);
+        const bool startMarker = marker == Marker::sampleStart
+                              || marker == Marker::loopStart;
+        const bool topMarker = marker == Marker::loopStart
+                            || marker == Marker::loopEnd;
+        const float flagX = startMarker
+                              ? juce::jmin (
+                                    markerX,
+                                    waveformBounds.getRight() - markerFlagWidth)
+                              : juce::jmax (
+                                    waveformBounds.getX(),
+                                    markerX - markerFlagWidth);
+
+        return { flagX,
+                 topMarker ? waveformBounds.getY()
+                           : waveformBounds.getBottom() - markerFlagHeight,
+                 markerFlagWidth,
+                 markerFlagHeight };
+    }
+
+    Marker markerAt (juce::Point<float> position) const
+    {
+        const auto bounds = getWaveformBounds();
+        Marker closestFlag = Marker::none;
+        float closestFlagDistance = (std::numeric_limits<float>::max)();
+
+        for (const auto marker : { Marker::sampleStart, Marker::sampleEnd,
+                                   Marker::loopStart, Marker::loopEnd })
+        {
+            if (! markerFlagBounds (marker).contains (position))
+                continue;
+
+            const float distance = std::abs (
+                position.x - samplePositionToX (markerPosition (marker), bounds));
+
+            if (distance < closestFlagDistance)
+            {
+                closestFlagDistance = distance;
+                closestFlag = marker;
+            }
+        }
+
+        if (closestFlag != Marker::none)
+            return closestFlag;
+
+        const bool chooseLoopMarker = processor.isPadLoopEnabled (padIndex)
+                                   && position.y < bounds.getCentreY();
+
+        if (chooseLoopMarker)
+        {
+            const float loopStartDistance = std::abs (
+                position.x - samplePositionToX (
+                    markerPosition (Marker::loopStart), bounds));
+            const float loopEndDistance = std::abs (
+                position.x - samplePositionToX (
+                    markerPosition (Marker::loopEnd), bounds));
+
+            if (juce::jmin (loopStartDistance, loopEndDistance)
+                <= markerGrabWidth)
+            {
+                return loopStartDistance <= loopEndDistance
+                         ? Marker::loopStart : Marker::loopEnd;
+            }
+        }
+
+        const float startX = samplePositionToX (
+            markerPosition (Marker::sampleStart), bounds);
+        const float endX = samplePositionToX (
+            markerPosition (Marker::sampleEnd), bounds);
+        const float startDistance = std::abs (position.x - startX);
+        const float endDistance = std::abs (position.x - endX);
+
+        if (juce::jmin (startDistance, endDistance) <= markerGrabWidth)
+            return startDistance <= endDistance
+                     ? Marker::sampleStart : Marker::sampleEnd;
+
+        return Marker::none;
     }
 
     float samplePositionToX (float samplePosition,
@@ -1539,6 +1807,9 @@ private:
 
     SVDrummerAudioProcessor& processor;
     static constexpr float markerGrabWidth = 9.0f;
+    static constexpr float markerFlagWidth = 22.0f;
+    static constexpr float markerFlagHeight = 14.0f;
+    static constexpr float markerHeaderHeight = 24.0f;
     static constexpr float minimumViewLength = 0.01f;
     static constexpr float overviewHeight = 28.0f;
     static constexpr float overviewGap = 5.0f;
@@ -1547,7 +1818,7 @@ private:
     float viewStart = 0.0f;
     float viewEnd = 1.0f;
     float overviewDragOffset = 0.5f;
-    bool draggingStart = true;
+    Marker activeMarker = Marker::none;
     bool draggingMarker = false;
     bool draggingOverview = false;
 };
@@ -1563,6 +1834,17 @@ public:
         configureSlider (panSlider, panLabel, "PAN", -1.0, 1.0, 0.01);
         configureSlider (tuneSlider, tuneLabel, "TUNE", -24.0, 24.0, 0.01);
         tuneSlider.setTextValueSuffix (" st");
+        configureSlider (chokeSlider, chokeLabel, "CHOKE", 0.0,
+                         static_cast<double> (SVDrummerAudioProcessor::numberOfPads),
+                         1.0);
+        chokeSlider.setNumDecimalPlacesToDisplay (0);
+        chokeSlider.setTooltip (
+            "Pads in the same non-zero choke group cut each other off");
+        chokeSlider.textFromValueFunction = [] (double value)
+        {
+            const int group = juce::roundToInt (value);
+            return group <= 0 ? juce::String ("OFF") : juce::String (group);
+        };
 
         panSlider.textFromValueFunction = [] (double value)
         {
@@ -1588,12 +1870,60 @@ public:
             if (! updating)
                 processor.setPadTuneSemitones (padIndex, static_cast<float> (tuneSlider.getValue()));
         };
+        chokeSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadChokeGroup (
+                    padIndex, juce::roundToInt (chokeSlider.getValue()));
+        };
 
         reverseButton.setClickingTogglesState (true);
+        reverseButton.setColour (juce::TextButton::buttonColourId,
+                                 raisedPanelColour.darker (0.18f));
+        reverseButton.setColour (juce::TextButton::buttonOnColourId,
+                                 trimMarkerColour.darker (0.30f));
+        reverseButton.setColour (juce::TextButton::textColourOffId,
+                                 mutedTextColour);
+        reverseButton.setColour (juce::TextButton::textColourOnId,
+                                 juce::Colours::white);
         reverseButton.onClick = [this]
         {
             if (! updating)
                 processor.setPadReversed (padIndex, reverseButton.getToggleState());
+        };
+        loopButton.setClickingTogglesState (true);
+        loopButton.setColour (juce::TextButton::buttonColourId,
+                              raisedPanelColour.darker (0.18f));
+        loopButton.setColour (juce::TextButton::buttonOnColourId,
+                              loopMarkerColour);
+        loopButton.setColour (juce::TextButton::textColourOffId,
+                              mutedTextColour);
+        loopButton.setColour (juce::TextButton::textColourOnId,
+                              juce::Colours::white);
+        loopButton.setTooltip (
+            "Loop between LS and LE; MIDI note-off stops, while a new trigger restarts");
+        loopButton.onClick = [this]
+        {
+            if (! updating)
+            {
+                processor.setPadLoopEnabled (padIndex,
+                                             loopButton.getToggleState());
+                waveformEditor.repaint();
+            }
+        };
+        snapButton.setClickingTogglesState (true);
+        snapButton.setTooltip (
+            "Constrain marker dragging and scrolling to sample zero crossings");
+        snapButton.setColour (juce::TextButton::buttonOnColourId,
+                              loopMarkerColour.darker (0.42f));
+        snapButton.onClick = [this]
+        {
+            if (! updating)
+            {
+                processor.setSampleMarkerSnapEnabled (
+                    snapButton.getToggleState());
+                waveformEditor.repaint();
+            }
         };
         clearButton.onClick = [this]
         {
@@ -1610,6 +1940,8 @@ public:
         addAndMakeVisible (pathLabel);
         addAndMakeVisible (waveformEditor);
         addAndMakeVisible (reverseButton);
+        addAndMakeVisible (loopButton);
+        addAndMakeVisible (snapButton);
         addAndMakeVisible (clearButton);
 
         titleLabel.setColour (juce::Label::textColourId, textColour);
@@ -1635,11 +1967,18 @@ public:
     void syncFromProcessor()
     {
         const juce::ScopedValueSetter<bool> setter (updating, true);
+        refreshPatternResetValues();
         volumeSlider.setValue (processor.getPadVolumeDb (padIndex), juce::dontSendNotification);
         panSlider.setValue (processor.getPadPan (padIndex), juce::dontSendNotification);
         tuneSlider.setValue (processor.getPadTuneSemitones (padIndex), juce::dontSendNotification);
+        chokeSlider.setValue (processor.getPadChokeGroup (padIndex),
+                              juce::dontSendNotification);
         reverseButton.setToggleState (processor.isPadReversed (padIndex),
                                       juce::dontSendNotification);
+        loopButton.setToggleState (processor.isPadLoopEnabled (padIndex),
+                                   juce::dontSendNotification);
+        snapButton.setToggleState (processor.isSampleMarkerSnapEnabled(),
+                                   juce::dontSendNotification);
 
         titleLabel.setText ("PAD " + juce::String (padIndex + 1)
                                 + "  —  " + processor.getPadDisplayName (padIndex),
@@ -1649,6 +1988,7 @@ public:
         pathLabel.setText (path.isNotEmpty() ? path : "No sample loaded",
                            juce::dontSendNotification);
         clearButton.setEnabled (path.isNotEmpty());
+        loopButton.setEnabled (path.isNotEmpty());
         waveformEditor.repaint();
     }
 
@@ -1666,7 +2006,7 @@ public:
         auto footer = getLocalBounds().reduced (14).removeFromBottom (24);
         g.setColour (mutedTextColour);
         g.setFont (10.5f);
-        g.drawText ("Click the waveform to audition. Drag S/E to trim; double-click to reset.",
+        g.drawText ("Drag markers or wheel their sample boxes. SNAP uses zero crossings; double-click resets.",
                     footer, juce::Justification::centredLeft, true);
     }
 
@@ -1693,12 +2033,51 @@ public:
         layoutKnob (panLabel, panSlider, controls.removeFromLeft (58));
         controls.removeFromLeft (4);
         layoutKnob (tuneLabel, tuneSlider, controls.removeFromLeft (58));
+        controls.removeFromLeft (4);
+        layoutKnob (chokeLabel, chokeSlider, controls.removeFromLeft (58));
         controls.removeFromLeft (8);
 
         reverseButton.setBounds (controls.removeFromLeft (92).withSizeKeepingCentre (88, 24));
+        controls.removeFromLeft (6);
+        loopButton.setBounds (controls.removeFromLeft (72).withSizeKeepingCentre (68, 24));
+        controls.removeFromLeft (6);
+        snapButton.setBounds (controls.removeFromLeft (72).withSizeKeepingCentre (68, 24));
     }
 
 private:
+    void refreshPatternResetValues()
+    {
+        const auto revision = processor.getPatternChangeRevision();
+
+        if (revision != resetValuesRevision)
+        {
+            for (int index = 0;
+                 index < SVDrummerAudioProcessor::numberOfPads;
+                 ++index)
+            {
+                resetVolumes[static_cast<std::size_t> (index)]
+                    = processor.getPadVolumeDb (index);
+                resetPans[static_cast<std::size_t> (index)]
+                    = processor.getPadPan (index);
+                resetTunes[static_cast<std::size_t> (index)]
+                    = processor.getPadTuneSemitones (index);
+                resetChokeGroups[static_cast<std::size_t> (index)]
+                    = processor.getPadChokeGroup (index);
+            }
+
+            resetValuesRevision = revision;
+        }
+
+        volumeSlider.setDoubleClickReturnValue (
+            true, resetVolumes[static_cast<std::size_t> (padIndex)]);
+        panSlider.setDoubleClickReturnValue (
+            true, resetPans[static_cast<std::size_t> (padIndex)]);
+        tuneSlider.setDoubleClickReturnValue (
+            true, resetTunes[static_cast<std::size_t> (padIndex)]);
+        chokeSlider.setDoubleClickReturnValue (
+            true, resetChokeGroups[static_cast<std::size_t> (padIndex)]);
+    }
+
     void configureSlider (juce::Slider& slider,
                           juce::Label& label,
                           const juce::String& labelText,
@@ -1735,6 +2114,12 @@ private:
 
     SVDrummerAudioProcessor& processor;
     SVDrummerWaveformEditor waveformEditor;
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetVolumes {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetPans {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetTunes {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetChokeGroups {};
+    std::uint64_t resetValuesRevision =
+        (std::numeric_limits<std::uint64_t>::max)();
     int padIndex = 0;
     bool updating = false;
     juce::Label titleLabel;
@@ -1742,10 +2127,14 @@ private:
     juce::Label volumeLabel;
     juce::Label panLabel;
     juce::Label tuneLabel;
+    juce::Label chokeLabel;
     juce::Slider volumeSlider;
     juce::Slider panSlider;
     juce::Slider tuneSlider;
+    juce::Slider chokeSlider;
     juce::TextButton reverseButton { "REVERSE" };
+    juce::TextButton loopButton { "LOOP" };
+    juce::TextButton snapButton { "SNAP" };
     juce::TextButton clearButton { "X" };
 };
 
@@ -2026,13 +2415,21 @@ class SVDrummerSequencerPanel final : public juce::Component
 {
 public:
     SVDrummerSequencerPanel (SVDrummerAudioProcessor& owner,
-                             std::function<void()> patternLibraryChanged)
-        : processor (owner), barScroll (false)
+                             std::function<void()> patternLibraryChanged,
+                             std::function<void (int)> laneSelectionChanged)
+        : processor (owner),
+          onLaneSelectionChanged (std::move (laneSelectionChanged)),
+          barScroll (false)
     {
         enableButton.onClick = [this]
         {
-            if (processor.isPatternMidiGateMode())
+            const auto midiMode = processor.getPatternMidiMode();
+
+            if (midiMode != SVDrummerAudioProcessor::PatternMidiMode::select)
             {
+                if (processor.isSequencerEnabled())
+                    processor.stopPatternMidiPlayback();
+
                 syncFromProcessor();
                 return;
             }
@@ -2042,17 +2439,19 @@ public:
         };
 
         configureLabel (midiModeLabel, "MIDI MODE");
-        midiModeButton.setClickingTogglesState (true);
+        midiModeButton.setClickingTogglesState (false);
         midiModeButton.setTooltip (
-            "SELECT changes patterns only; GATE starts on note-on and stops on note-off");
+            "SELECT chooses patterns; GATE follows note-on/off; HOLD toggles playback");
         midiModeButton.setColour (juce::TextButton::buttonColourId,
                                   raisedPanelColour);
         midiModeButton.setColour (juce::TextButton::buttonOnColourId,
                                   juce::Colour (0xff3e536a));
         midiModeButton.onClick = [this]
         {
-            processor.setPatternMidiGateMode (
-                midiModeButton.getToggleState());
+            const int nextMode =
+                (static_cast<int> (processor.getPatternMidiMode()) + 1) % 3;
+            processor.setPatternMidiMode (
+                static_cast<SVDrummerAudioProcessor::PatternMidiMode> (nextMode));
             syncFromProcessor();
         };
 
@@ -2075,6 +2474,7 @@ public:
         };
 
         configureSequencerKnob (viewSlider, 0.0, 2.0);
+        viewSlider.setDoubleClickReturnValue (true, 0.0);
         viewSlider.textFromValueFunction = [] (double value)
         {
             const int index = juce::jlimit (0, 2, juce::roundToInt (value));
@@ -2182,6 +2582,16 @@ public:
             slot->repaint();
 
         repaint();
+    }
+
+    int getSelectedLane() const noexcept
+    {
+        return selectedLane;
+    }
+
+    void setSelectedLane (int lane)
+    {
+        selectLane (lane);
     }
 
     void paint (juce::Graphics& g) override
@@ -2415,16 +2825,29 @@ private:
     void syncFromProcessor()
     {
         updatingControls = true;
+        refreshPatternResetValues();
         const bool enabled = processor.isSequencerEnabled();
-        const bool gateMode = processor.isPatternMidiGateMode();
+        const auto midiMode = processor.getPatternMidiMode();
+        const bool triggeredMode =
+            midiMode != SVDrummerAudioProcessor::PatternMidiMode::select;
         enableButton.setToggleState (enabled, juce::dontSendNotification);
-        enableButton.setTooltip (
-            gateMode
-                ? "Pattern-note gate status: note-on starts and note-off stops"
-                : "Start or stop the sequencer while the host transport is running");
+
+        if (midiMode == SVDrummerAudioProcessor::PatternMidiMode::gate)
+            enableButton.setTooltip (
+                "Pattern-note gate status: note-on starts, note-off or this button stops");
+        else if (midiMode == SVDrummerAudioProcessor::PatternMidiMode::hold)
+            enableButton.setTooltip (
+                "Pattern-note hold status: press the active pattern note again or click here to stop");
+        else
+            enableButton.setTooltip (
+                "Start or stop the sequencer while the host transport is running");
+
         enableButton.repaint();
-        midiModeButton.setToggleState (gateMode, juce::dontSendNotification);
-        midiModeButton.setButtonText (gateMode ? "GATE" : "SELECT");
+        midiModeButton.setToggleState (triggeredMode, juce::dontSendNotification);
+        midiModeButton.setButtonText (
+            midiMode == SVDrummerAudioProcessor::PatternMidiMode::gate ? "GATE"
+          : midiMode == SVDrummerAudioProcessor::PatternMidiMode::hold ? "HOLD"
+                                                                       : "SELECT");
         lengthSlider.setValue (processor.getPatternBars(), juce::dontSendNotification);
         lengthSlider.updateText();
         viewSlider.updateText();
@@ -2436,6 +2859,7 @@ private:
     void syncLaneControls()
     {
         updatingControls = true;
+        refreshPatternResetValues();
         const int division = processor.getLaneDivision (selectedLane);
         divisionSlider.setValue (division, juce::dontSendNotification);
         divisionSlider.updateText();
@@ -2450,6 +2874,34 @@ private:
         laneButton.setColour (juce::TextButton::buttonColourId,
                               getPadColour (selectedLane).withAlpha (0.58f));
         updatingControls = false;
+    }
+
+    void refreshPatternResetValues()
+    {
+        const auto revision = processor.getPatternChangeRevision();
+
+        if (revision != resetValuesRevision)
+        {
+            resetLength = processor.getPatternBars();
+
+            for (int lane = 0;
+                 lane < SVDrummerAudioProcessor::numberOfPads;
+                 ++lane)
+            {
+                resetDivisions[static_cast<std::size_t> (lane)]
+                    = processor.getLaneDivision (lane);
+                resetLoopLengths[static_cast<std::size_t> (lane)]
+                    = processor.getLaneLoopLength (lane);
+            }
+
+            resetValuesRevision = revision;
+        }
+
+        lengthSlider.setDoubleClickReturnValue (true, resetLength);
+        divisionSlider.setDoubleClickReturnValue (
+            true, resetDivisions[static_cast<std::size_t> (selectedLane)]);
+        loopLengthSlider.setDoubleClickReturnValue (
+            true, resetLoopLengths[static_cast<std::size_t> (selectedLane)]);
     }
 
     void updateScrollRange()
@@ -2493,6 +2945,10 @@ private:
         {
             selectedLane = newLane;
             syncLaneControls();
+
+            if (onLaneSelectionChanged)
+                onLaneSelectionChanged (selectedLane);
+
             repaint();
         }
     }
@@ -2674,6 +3130,7 @@ private:
     }
 
     SVDrummerAudioProcessor& processor;
+    std::function<void (int)> onLaneSelectionChanged;
     SVDrummerTransportButton enableButton;
     juce::Label midiModeLabel;
     juce::TextButton midiModeButton { "SELECT" };
@@ -2689,6 +3146,8 @@ private:
     juce::ScrollBar barScroll;
     std::array<std::unique_ptr<SVDrummerPatternSlot>,
                SVDrummerAudioProcessor::numberOfPatterns> patternSlots;
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetDivisions {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetLoopLengths {};
     juce::Rectangle<int> rulerBounds;
     juce::Rectangle<int> sequenceRowsBounds;
     juce::Rectangle<int> patternBounds;
@@ -2699,6 +3158,9 @@ private:
     int gestureVelocity = 0;
     int lastGestureVisibleStep = -1;
     int lastDrawVelocity = 100;
+    double resetLength = 1.0;
+    std::uint64_t resetValuesRevision =
+        (std::numeric_limits<std::uint64_t>::max)();
     bool stepGestureActive = false;
     bool updatingControls = false;
 };
@@ -2719,7 +3181,8 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
         padComponents[static_cast<std::size_t> (padIndex)]
             = std::make_unique<SVDrummerPadComponent> (
                 processor, padIndex,
-                [this] (int selected) { showPadSettings (selected); });
+                [this] (int selected) { showPadSettings (selected); },
+                [this] (int selected) { selectPadFromIndicator (selected); });
         addAndMakeVisible (*padComponents[static_cast<std::size_t> (padIndex)]);
     }
 
@@ -2730,7 +3193,8 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
         {
             if (browserPanel != nullptr)
                 browserPanel->refresh();
-        });
+        },
+        [this] (int lane) { updatePadSelection (lane); });
     addAndMakeVisible (*padSettingsPanel);
     addAndMakeVisible (*sequencerPanel);
 
@@ -2804,7 +3268,7 @@ void SVDrummerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (mutedTextColour);
     g.setFont (11.5f);
-    g.drawFittedText ("16-PAD SAMPLE PLAYER  -  STAGE 4.6",
+    g.drawFittedText ("16-PAD SAMPLE PLAYER  -  STAGE 6.0",
                       header, juce::Justification::centredRight, 1);
     g.restoreState();
 }
@@ -2944,9 +3408,7 @@ void SVDrummerAudioProcessorEditor::saveZoomSetting() const
 void SVDrummerAudioProcessorEditor::showSequencerView()
 {
     showingSettings = false;
-
-    for (auto& pad : padComponents)
-        pad->setEditingSelected (false);
+    updatePadSelection (sequencerPanel->getSelectedLane());
 
     sequencerPanel->setVisible (true);
     padSettingsPanel->setVisible (false);
@@ -2958,15 +3420,38 @@ void SVDrummerAudioProcessorEditor::showPadSettings (int padIndex)
     selectedPad = juce::jlimit (0, SVDrummerAudioProcessor::numberOfPads - 1,
                                padIndex);
     showingSettings = true;
-
-    for (int index = 0; index < SVDrummerAudioProcessor::numberOfPads; ++index)
-        padComponents[static_cast<std::size_t> (index)]->setEditingSelected (
-            index == selectedPad);
+    sequencerPanel->setSelectedLane (selectedPad);
+    updatePadSelection (selectedPad);
 
     padSettingsPanel->setPadIndex (selectedPad);
     sequencerPanel->setVisible (false);
     padSettingsPanel->setVisible (true);
     updateViewButtons();
+}
+
+void SVDrummerAudioProcessorEditor::selectPadFromIndicator (int padIndex)
+{
+    const int selected = juce::jlimit (
+        0, SVDrummerAudioProcessor::numberOfPads - 1, padIndex);
+
+    if (showingSettings)
+    {
+        showPadSettings (selected);
+        return;
+    }
+
+    sequencerPanel->setSelectedLane (selected);
+    updatePadSelection (selected);
+}
+
+void SVDrummerAudioProcessorEditor::updatePadSelection (int padIndex)
+{
+    selectedPad = juce::jlimit (
+        0, SVDrummerAudioProcessor::numberOfPads - 1, padIndex);
+
+    for (int index = 0; index < SVDrummerAudioProcessor::numberOfPads; ++index)
+        padComponents[static_cast<std::size_t> (index)]->setSelected (
+            index == selectedPad);
 }
 
 void SVDrummerAudioProcessorEditor::updateViewButtons()

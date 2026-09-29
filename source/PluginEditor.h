@@ -28,6 +28,8 @@ private:
     void timerCallback() override;
     void showSequencerView();
     void showPadSettings (int padIndex);
+    void selectPadFromIndicator (int padIndex);
+    void updatePadSelection (int padIndex);
     void updateViewButtons();
     int loadSavedZoomPercent() const;
     void saveZoomSetting() const;

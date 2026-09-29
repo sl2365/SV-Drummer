@@ -19,6 +19,13 @@ public:
     static constexpr int maximumStepsPerBar = 64;
     static constexpr int maximumStepsPerLane = maximumPatternBars * maximumStepsPerBar;
 
+    enum class PatternMidiMode
+    {
+        select = 0,
+        gate,
+        hold
+    };
+
     struct SampleData
     {
         juce::AudioBuffer<float> audio;
@@ -26,6 +33,7 @@ public:
         juce::String displayName;
         juce::String fullPath;
         std::vector<juce::Range<float>> waveform;
+        std::vector<int> zeroCrossings;
     };
 
     SVDrummerAudioProcessor();
@@ -73,10 +81,26 @@ public:
     void setPadPan (int padIndex, float pan);
     float getPadTuneSemitones (int padIndex) const;
     void setPadTuneSemitones (int padIndex, float semitones);
-    float getPadSampleStart (int padIndex) const;
-    void setPadSampleStart (int padIndex, float normalisedPosition);
-    float getPadSampleEnd (int padIndex) const;
-    void setPadSampleEnd (int padIndex, float normalisedPosition);
+    int getPadChokeGroup (int padIndex) const;
+    void setPadChokeGroup (int padIndex, int chokeGroup);
+    int getPadSampleLength (int padIndex) const;
+    int getPadSampleStart (int padIndex) const;
+    void setPadSampleStart (int padIndex, int samplePosition,
+                            int snapDirection = 0);
+    int getPadSampleEnd (int padIndex) const;
+    void setPadSampleEnd (int padIndex, int samplePosition,
+                          int snapDirection = 0);
+    bool isPadLoopEnabled (int padIndex) const;
+    void setPadLoopEnabled (int padIndex, bool shouldLoop);
+    int getPadLoopStart (int padIndex) const;
+    void setPadLoopStart (int padIndex, int samplePosition,
+                          int snapDirection = 0);
+    int getPadLoopEnd (int padIndex) const;
+    void setPadLoopEnd (int padIndex, int samplePosition,
+                        int snapDirection = 0);
+    void resetPadSampleMarkers (int padIndex);
+    bool isSampleMarkerSnapEnabled() const;
+    void setSampleMarkerSnapEnabled (bool shouldSnap);
     juce::String getPadSamplePath (int padIndex) const;
     juce::String getPadDisplayName (int padIndex) const;
     std::uint64_t getPadActivityCounter (int padIndex) const;
@@ -85,8 +109,9 @@ public:
 
     bool isSequencerEnabled() const;
     void setSequencerEnabled (bool shouldBeEnabled);
-    bool isPatternMidiGateMode() const;
-    void setPatternMidiGateMode (bool shouldUseGateMode);
+    void stopPatternMidiPlayback();
+    PatternMidiMode getPatternMidiMode() const;
+    void setPatternMidiMode (PatternMidiMode newMode);
     int getPatternBars() const;
     void setPatternBars (int bars);
     int getLaneDivision (int laneIndex) const;
@@ -100,6 +125,7 @@ public:
     double getSequencerPatternPositionQuarterNotes() const;
 
     int getCurrentPatternIndex() const;
+    std::uint64_t getPatternChangeRevision() const;
     void selectPattern (int patternIndex);
     bool isPatternAssigned (int patternIndex) const;
     juce::String getPatternName (int patternIndex) const;
@@ -132,9 +158,14 @@ private:
         double increment = 1.0;
         double rangeStart = 0.0;
         double rangeEnd = 1.0;
+        double loopStart = 0.0;
+        double loopEnd = 1.0;
         float velocity = 1.0f;
         int delaySamples = 0;
+        int chokeAtOutputSample = -1;
         std::uint64_t sampleRevision = 0;
+        bool looping = false;
+        bool sequencerTriggered = false;
         bool active = false;
     };
 
@@ -161,8 +192,12 @@ private:
         std::atomic<float> volumeDb { 0.0f };
         std::atomic<float> pan { 0.0f };
         std::atomic<float> tuneSemitones { 0.0f };
-        std::atomic<float> sampleStart { 0.0f };
-        std::atomic<float> sampleEnd { 1.0f };
+        std::atomic<int> chokeGroup { 0 };
+        std::atomic<int> sampleStart { 0 };
+        std::atomic<int> sampleEnd { 0 };
+        std::atomic<bool> loopEnabled { false };
+        std::atomic<int> loopStart { 0 };
+        std::atomic<int> loopEnd { 0 };
         std::shared_ptr<const SampleData> sample;
         std::array<Voice, voicesPerPad> voices;
         std::atomic<std::uint64_t> sampleRevision { 0 };
@@ -191,8 +226,12 @@ private:
         float volumeDb = 0.0f;
         float pan = 0.0f;
         float tuneSemitones = 0.0f;
-        float sampleStart = 0.0f;
-        float sampleEnd = 1.0f;
+        int chokeGroup = 0;
+        int sampleStart = 0;
+        int sampleEnd = 0;
+        bool loopEnabled = false;
+        int loopStart = 0;
+        int loopEnd = 0;
     };
 
     struct StoredPattern
@@ -212,7 +251,9 @@ private:
     std::array<std::atomic<float>, numberOfPads> pendingInterfaceVelocities;
     std::atomic<std::uint32_t> pendingInterfaceTriggers { 0 };
     std::atomic<bool> sequencerEnabled { false };
-    std::atomic<bool> patternMidiGateMode { false };
+    std::atomic<int> patternMidiMode {
+        static_cast<int> (PatternMidiMode::select)
+    };
     std::atomic<bool> patternGateActive { false };
     std::atomic<bool> patternGateWaitingForSelection { false };
     std::atomic<int> activePatternGateNote { -1 };
@@ -225,6 +266,7 @@ private:
     std::atomic<int> currentPatternIndex { 0 };
     std::atomic<int> pendingPatternSelection { -1 };
     std::atomic<std::uint64_t> patternChangeCounter { 0 };
+    std::atomic<bool> sampleMarkerSnapEnabled { false };
 
     juce::AudioFormatManager formatManager;
     double currentSampleRate = 44100.0;
@@ -238,7 +280,10 @@ private:
     juce::StringArray browserFolders;
     std::atomic<bool> portableSettingsDirty { false };
 
-    void triggerPadOnAudioThread (int padIndex, float velocity, int delaySamples = 0);
+    void triggerPadOnAudioThread (int padIndex, float velocity,
+                                  int delaySamples = 0,
+                                  bool triggeredBySequencer = false);
+    void stopSequencerLoopVoicesOnAudioThread();
     void triggerBrowserPreviewOnAudioThread();
     void renderBrowserPreview (juce::AudioBuffer<float>& output);
     void processSequencerTriggers (int numSamples);
@@ -247,6 +292,9 @@ private:
                           juce::AudioBuffer<float>& output,
                           bool outputEnabled);
     bool anyPadIsSoloed() const;
+    int snapMarkerPosition (int padIndex, int requestedPosition,
+                            int minimumPosition, int maximumPosition,
+                            int currentPosition, int direction) const;
     bool isValidPadIndex (int padIndex) const noexcept;
     bool isValidPatternIndex (int patternIndex) const noexcept;
     void markPortableSettingsDirty() noexcept;

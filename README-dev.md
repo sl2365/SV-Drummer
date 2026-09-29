@@ -1,4 +1,4 @@
-# SV-Drummer Stage 4.6
+# SV-Drummer Stage 6.0
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -18,10 +18,16 @@ Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 - Multiple sample-library folders, displayed as a lazy-loading folder tree.
 - WAV, MP3, OGG, FLAC and AIFF sample loading through JUCE audio formats.
 - Waveform and sample name on every pad.
+- Numbered pad circles act as global selectors and selection indicators.
 - MIDI notes 36–51 by default; click or mouse-wheel the note field to change it.
 - Mouse and MIDI pad triggering with MIDI velocity.
 - Per-pad mute, solo, volume, pan, tune and reverse controls.
+- Sixteen per-pad choke groups; pads sharing a non-zero group cut each other off.
 - High-detail per-pad waveform editor with draggable playback START and END markers.
+- Per-pad sample looping with a LOOP switch and draggable LS/LE waveform markers.
+- Exact sample-frame START, END, L-START and L-END positions with wheel editing.
+- Optional zero-crossing SNAP for click-resistant trim and loop boundaries.
+- Continuous, time-ordered waveform tracing through every zero crossing.
 - Cursor-centred mouse-wheel waveform zoom for precise START and END editing.
 - Draggable full-sample overview bar for scrolling the zoomed waveform.
 - Browser Preview button for auditioning a selected sample without loading a pad.
@@ -39,14 +45,13 @@ Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 - A single full-height playhead rectangle replaces sixteen separate lane boxes.
 - Sixteen working pattern slots, each storing its sequence and complete pad kit.
 - Pattern slots can be selected manually or by an optional custom MIDI note.
-- Pattern MIDI notes support SELECT and momentary GATE playback modes.
+- Pattern MIDI notes support SELECT, momentary GATE and latched HOLD modes.
 - Portable `.svpattern` files with browser-to-slot drag assignment.
 - Sequencer data saved in both plug-in state and portable settings.
 - Sample-library roots reopen collapsed for faster browsing.
 - ASCII-only header status text for reliable display on Windows hosts.
 
-Amp/filter/LFO controls, sample looping and choke groups remain reserved for
-later stages.
+Amp, filter and LFO controls remain reserved for later stages.
 
 Stage 1.1 corrects the Windows `max` macro collision reported by the first
 Visual Studio 2026 build.
@@ -112,7 +117,8 @@ The PAD SETTINGS view now includes the first functional sample-editing stage: a
 large waveform with draggable START and END markers. The selected range controls
 real playback in normal and reverse modes. Double-click the waveform to reset to
 the complete sample. START and END are preserved in host state, portable pad
-settings and `.svpattern` files. Loop controls follow in the next stage.
+settings and `.svpattern` files. The loop controls planned here are completed in
+Stage 5.0.
 
 Stage 4.1 compacts the PAD SETTINGS knobs and buttons to the Sequencer control
 size, places the sample path on the pad title row and gives the reclaimed height
@@ -138,7 +144,7 @@ down to 1% of the complete sample. START and END dragging remains mapped to the
 correct sample position while zoomed; double-click resets both the playback
 range and waveform view. Each pad now has the numbered circle shown in the
 reference mockup. The circle uses a pad-colour outline normally and fills with
-that colour only while the pad is open for editing.
+that colour when the pad is selected.
 
 The pad name and number now share one vertically aligned title row. The
 Sequencer transport has a circular Play/Stop button, and DIV adds `1/4T` and
@@ -165,6 +171,66 @@ immediately. The Play triangle is geometrically centred.
 LENGTH and VIEW now display `Bar`/`Bars`, LOOP displays `Step`/`Steps`, and DIV
 explicitly refreshes its musical value after settings or pattern restoration.
 MIDI MODE is saved in both portable settings and host state.
+
+Stage 4.7 adds the third MIDI MODE, `HOLD`. Pressing an assigned pattern note
+selects that pattern, restarts it at Step 1 and leaves it playing after note-off.
+Pressing other assigned notes switches and restarts their patterns; pressing the
+currently playing pattern note again stops the sequencer.
+
+All rotary controls now support double-click reset. LENGTH, DIV, LOOP and the
+per-pad VOLUME, PAN and TUNE knobs return to the values captured when the current
+pattern or host preset was loaded. VIEW returns to its normal `1 Bar` default.
+
+Stage 4.8 makes each numbered pad circle a global selector and indicator. In
+Sequencer view, selecting a lane fills its matching pad circle, while clicking a
+circle selects that lane for editing. In Pad Settings, clicking a circle selects
+that pad for editing just like its cog button. The selected pad and sequencer
+lane remain linked when switching views, and circle clicks no longer audition
+the sample.
+
+Stage 5.0 allows the circular Play/Stop button to stop MIDI-triggered playback
+in both GATE and HOLD modes. It remains intentionally unable to start those
+modes without their assigned pattern note.
+
+PAD SETTINGS now adds functional per-pad sample looping. Enable `LOOP`, then
+drag the `LS` and `LE` flags at the top of the waveform to set the repeat range;
+the `S` and `E` trim flags remain at the bottom. The top half of an overlapping
+marker selects the loop point and the bottom half selects the trim point.
+Double-click resets all four markers and the waveform view. MIDI note-off stops
+a held loop, a new trigger restarts it, and stopping the sequencer ends loops
+started by sequencer steps. Loop enable and positions are preserved in portable
+settings, host state and `.svpattern` files.
+
+Stage 5.1 replaces the separate positive and negative waveform envelopes with
+one continuous time-ordered signal path. The main waveform and overview now
+cross zero without doubling back, matching conventional audio editors while
+remaining filled to the zero line. Trim `S`/`E` marker lines and flags are red;
+loop `LS`/`LE` marker lines and flags are aqua. The complete visible flag area
+is now a drag target, as well as the marker line itself.
+
+Stage 5.2 replaces percentage marker positions with exact sample-frame indices.
+The larger `START`, `END`, `L-START` and `L-END` value boxes show the precise
+playback boundary and can each be adjusted with the mouse wheel. With `SNAP`
+off, each wheel movement changes the boundary by one sample; with `SNAP` on it
+moves to the next or previous zero crossing. Marker dragging also selects only
+the nearest zero crossing while SNAP is enabled.
+
+Zero crossings are analysed once when a sample is loaded, keeping dragging
+responsive. Exact positions control playback directly and are preserved in
+portable settings, host state and version 2 `.svpattern` files. SNAP is an
+editing preference saved in portable settings and host state.
+
+Stage 6.0 makes the active states of `REVERSE` and `LOOP` immediately visible
+with strong filled button colours. Loop marker lines and flags use a darker aqua
+for clearer white `LS`/`LE` text.
+
+The PAD SETTINGS controls now include a functional `CHOKE` group knob. `OFF`
+leaves the pad polyphonic; values 1–16 assign a group. Triggering any pad in a
+non-zero group cuts voices already playing in the same group, including an
+earlier voice from that pad. Chokes honour the trigger's sample offset within
+the current audio block. Choke assignments are stored with portable settings,
+host state and version 3 `.svpattern` files, and double-click returns the knob
+to the value captured with the current pattern or host preset.
 
 ## Pattern buttons
 
