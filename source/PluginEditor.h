@@ -32,15 +32,22 @@ private:
     void updatePadSelection (int padIndex);
     void updateViewButtons();
     int loadSavedZoomPercent() const;
-    void saveZoomSetting() const;
+    juce::Result saveZoomSetting() const;
+    juce::Result saveAllSettings();
+    void handleLibraryLoadCompleted();
+    void offerToRelinkMissingSamples();
+    void chooseMissingSampleFolder();
 
     SVDrummerAudioProcessor& processor;
     std::unique_ptr<SVDrummerLookAndFeel> lookAndFeel;
+    std::unique_ptr<juce::TooltipWindow> tooltipWindow;
+    juce::Image logoImage;
     std::unique_ptr<SVDrummerBrowserPanel> browserPanel;
     std::array<std::unique_ptr<SVDrummerPadComponent>,
                SVDrummerAudioProcessor::numberOfPads> padComponents;
     std::unique_ptr<SVDrummerPadSettingsPanel> padSettingsPanel;
     std::unique_ptr<SVDrummerSequencerPanel> sequencerPanel;
+    std::unique_ptr<juce::FileChooser> missingSampleFolderChooser;
 
     juce::TextButton sequencerViewButton { "SEQUENCER" };
     juce::TextButton settingsViewButton { "PAD SETTINGS" };
@@ -52,7 +59,6 @@ private:
     float uiOffsetY = 0.0f;
     int selectedPad = 0;
     int portableSettingsTimerTicks = 0;
-    int zoomSaveTimerTicks = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SVDrummerAudioProcessorEditor)
 };

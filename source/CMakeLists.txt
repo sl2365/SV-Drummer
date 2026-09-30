@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(SVDrummer VERSION 1.0.0 LANGUAGES C CXX)
+project(SVDrummer VERSION 0.7.12 LANGUAGES C CXX)
 
 set(JUCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../_Tools/JUCE/_8.0.15")
 
@@ -12,7 +12,7 @@ endif()
 add_subdirectory("${JUCE_DIR}" "${CMAKE_BINARY_DIR}/JUCE")
 
 juce_add_plugin(SVDrummer
-    VERSION 1.0.0
+    VERSION 0.7.12
     COMPANY_NAME "sl23"
     BUNDLE_ID "com.sl23.svdrummer"
     IS_SYNTH TRUE
@@ -30,6 +30,10 @@ juce_add_plugin(SVDrummer
     PLUGIN_CODE svd1)
 
 juce_generate_juce_header(SVDrummer)
+
+juce_add_binary_data(SVDrummerAssets
+    SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/../Resources/logo.png")
 
 target_sources(SVDrummer
     PRIVATE
@@ -51,6 +55,7 @@ target_compile_definitions(SVDrummer
 
 target_link_libraries(SVDrummer
     PRIVATE
+        SVDrummerAssets
         juce::juce_audio_utils
         juce::juce_audio_formats
     PUBLIC

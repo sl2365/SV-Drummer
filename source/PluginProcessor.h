@@ -26,6 +26,14 @@ public:
         hold
     };
 
+    enum class BrowserMode
+    {
+        samples = 0,
+        kits,
+        patterns,
+        projects
+    };
+
     struct SampleData
     {
         juce::AudioBuffer<float> audio;
@@ -83,6 +91,14 @@ public:
     void setPadTuneSemitones (int padIndex, float semitones);
     int getPadChokeGroup (int padIndex) const;
     void setPadChokeGroup (int padIndex, int chokeGroup);
+    float getPadAmpAttackMs (int padIndex) const;
+    void setPadAmpAttackMs (int padIndex, float milliseconds);
+    float getPadAmpDecayMs (int padIndex) const;
+    void setPadAmpDecayMs (int padIndex, float milliseconds);
+    float getPadAmpSustain (int padIndex) const;
+    void setPadAmpSustain (int padIndex, float level);
+    float getPadAmpReleaseMs (int padIndex) const;
+    void setPadAmpReleaseMs (int padIndex, float milliseconds);
     int getPadSampleLength (int padIndex) const;
     int getPadSampleStart (int padIndex) const;
     void setPadSampleStart (int padIndex, int samplePosition,
@@ -134,34 +150,76 @@ public:
     void setPatternMidiNote (int patternIndex, int midiNote);
     juce::Result loadPatternIntoSlot (int patternIndex, const juce::File& file);
     juce::Result savePatternSlotToFile (int patternIndex, const juce::File& file);
+    void copyPatternSlot (int patternIndex);
+    bool canPastePatternSlot() const noexcept;
+    void pastePatternSlot (int patternIndex);
+    void clearPatternSlot (int patternIndex);
+    void randomisePatternSlot (int patternIndex);
+    bool canUndoPatternOperation (int patternIndex) const noexcept;
+    void undoPatternOperation (int patternIndex);
+    bool patternSetHasSteps() const;
+    juce::Result loadPatternSetFromFile (const juce::File& file);
+    juce::Result savePatternSetToFile (const juce::File& file);
+    juce::Result loadKitFromFile (const juce::File& file);
+    juce::Result saveKitToFile (const juce::File& file) const;
+    bool kitHasSamples() const;
+    juce::Result loadProjectFromFile (const juce::File& file);
+    juce::Result saveProjectToFile (const juce::File& file);
+    juce::StringArray getMissingSampleDescriptions() const;
+    int relinkMissingSamplesFromFolder (const juce::File& folder,
+                                        bool searchSubfolders = true);
 
     static juce::String getSequencerDivisionName (int divisionIndex);
     static int getSequencerStepsPerBar (int divisionIndex);
     static double getSequencerQuarterNotesPerStep (int divisionIndex);
 
     juce::StringArray getBrowserFolders() const;
-    void addBrowserFolder (const juce::File& folder);
-    void removeBrowserFolder (const juce::File& folder);
+    juce::Result addBrowserFolder (const juce::File& folder);
+    juce::Result removeBrowserFolder (const juce::File& folder);
 
     int getEditorSelectedPad() const noexcept;
     void setEditorSelectedPad (int padIndex) noexcept;
     bool isEditorShowingPadSettings() const noexcept;
     void setEditorShowingPadSettings (bool shouldShow) noexcept;
-    bool isEditorBrowserShowingSamples() const noexcept;
-    void setEditorBrowserShowingSamples (bool shouldShow) noexcept;
-    juce::String getEditorBrowserTreeState (bool samplesBrowser) const;
-    void setEditorBrowserTreeState (bool samplesBrowser,
+    BrowserMode getEditorBrowserMode() const noexcept;
+    void setEditorBrowserMode (BrowserMode mode) noexcept;
+    juce::String getEditorBrowserTreeState (BrowserMode mode) const;
+    void setEditorBrowserTreeState (BrowserMode mode,
                                     const juce::String& state);
 
     juce::File getPortableDataDirectory() const;
     juce::File getPortableSamplesDirectory() const;
+    juce::File getPortableKitsDirectory() const;
     juce::File getPortablePatternsDirectory() const;
-    void flushPortableSettingsIfNeeded();
+    juce::File getPortableProjectsDirectory() const;
+    juce::Result savePortableSettingsNow();
+    int getEditorZoomPercent() const noexcept;
+    void setEditorZoomPercent (int zoomPercent) noexcept;
+    juce::Result saveEditorZoomNow();
+    bool hasUnsavedPortableChanges() const noexcept;
 
     static bool isSupportedAudioFile (const juce::File& file);
+    static bool isSupportedKitFile (const juce::File& file);
     static bool isSupportedPatternFile (const juce::File& file);
+    static bool isSupportedPatternSetFile (const juce::File& file);
+    static bool isSupportedProjectFile (const juce::File& file);
 
 private:
+    struct PadHostParameters
+    {
+        juce::RangedAudioParameter* volume = nullptr;
+        juce::RangedAudioParameter* pan = nullptr;
+        juce::RangedAudioParameter* tune = nullptr;
+    };
+
+    enum class EnvelopeStage
+    {
+        attack,
+        decay,
+        sustain,
+        release
+    };
+
     struct Voice
     {
         std::shared_ptr<const SampleData> sample;
@@ -174,6 +232,14 @@ private:
         float velocity = 1.0f;
         int delaySamples = 0;
         int chokeAtOutputSample = -1;
+        int releaseAtOutputSample = -1;
+        float envelopeLevel = 1.0f;
+        float envelopeSustain = 1.0f;
+        float envelopeDelta = 0.0f;
+        int envelopeSamplesRemaining = 0;
+        int envelopeDecaySamples = 0;
+        int envelopeReleaseSamples = 0;
+        EnvelopeStage envelopeStage = EnvelopeStage::sustain;
         std::uint64_t sampleRevision = 0;
         bool looping = false;
         bool sequencerTriggered = false;
@@ -204,6 +270,10 @@ private:
         std::atomic<float> pan { 0.0f };
         std::atomic<float> tuneSemitones { 0.0f };
         std::atomic<int> chokeGroup { 0 };
+        std::atomic<float> ampAttackMs { 0.0f };
+        std::atomic<float> ampDecayMs { 0.0f };
+        std::atomic<float> ampSustain { 1.0f };
+        std::atomic<float> ampReleaseMs { 0.0f };
         std::atomic<int> sampleStart { 0 };
         std::atomic<int> sampleEnd { 0 };
         std::atomic<bool> loopEnabled { false };
@@ -225,7 +295,7 @@ private:
         int loopLength = 16;
     };
 
-    struct PatternPadState
+    struct KitPadState
     {
         std::shared_ptr<const SampleData> sample;
         juce::String samplePath;
@@ -238,6 +308,10 @@ private:
         float pan = 0.0f;
         float tuneSemitones = 0.0f;
         int chokeGroup = 0;
+        float ampAttackMs = 0.0f;
+        float ampDecayMs = 0.0f;
+        float ampSustain = 1.0f;
+        float ampReleaseMs = 0.0f;
         int sampleStart = 0;
         int sampleEnd = 0;
         bool loopEnabled = false;
@@ -248,7 +322,6 @@ private:
     struct StoredPattern
     {
         std::array<PatternLaneState, numberOfPads> lanes;
-        std::array<PatternPadState, numberOfPads> pads;
         juce::String name;
         int bars = 1;
         bool assigned = false;
@@ -273,6 +346,10 @@ private:
     std::atomic<int> patternBars { 1 };
     std::atomic<double> sequencerPatternPositionQuarterNotes { 0.0 };
     std::array<StoredPattern, numberOfPatterns> storedPatterns;
+    StoredPattern copiedPattern;
+    std::atomic<bool> copiedPatternAvailable { false };
+    StoredPattern undoPattern;
+    std::atomic<int> undoPatternIndex { -1 };
     std::array<std::atomic<int>, numberOfPatterns> patternMidiNotes;
     std::atomic<int> currentPatternIndex { 0 };
     std::atomic<int> pendingPatternSelection { -1 };
@@ -290,15 +367,32 @@ private:
     mutable juce::CriticalSection stateLock;
     juce::StringArray browserFolders;
     juce::String samplesBrowserTreeState;
+    juce::String kitsBrowserTreeState;
     juce::String patternsBrowserTreeState;
+    juce::String projectsBrowserTreeState;
     std::atomic<int> editorSelectedPad { 0 };
     std::atomic<bool> editorShowingPadSettings { false };
-    std::atomic<bool> editorBrowserShowingSamples { true };
+    std::atomic<int> editorBrowserMode {
+        static_cast<int> (BrowserMode::samples)
+    };
+    std::atomic<int> editorZoomPercent { 100 };
     std::atomic<bool> portableSettingsDirty { false };
+    std::atomic<bool> restoringHostState { false };
+    std::atomic<float> hostStateRevision { 0.0f };
+    std::array<PadHostParameters, numberOfPads> padHostParameters;
+    juce::RangedAudioParameter* sequencerEnabledParameter = nullptr;
+    juce::RangedAudioParameter* patternMidiModeParameter = nullptr;
+    juce::RangedAudioParameter* patternBarsParameter = nullptr;
+    juce::RangedAudioParameter* sampleMarkerSnapParameter = nullptr;
+    juce::RangedAudioParameter* stateRevisionParameter = nullptr;
 
     void triggerPadOnAudioThread (int padIndex, float velocity,
                                   int delaySamples = 0,
                                   bool triggeredBySequencer = false);
+    void startVoiceEnvelope (Voice& voice, const PadState& pad);
+    void startVoiceDecay (Voice& voice);
+    void beginVoiceRelease (Voice& voice);
+    void advanceVoiceEnvelope (Voice& voice);
     void stopSequencerLoopVoicesOnAudioThread();
     void triggerBrowserPreviewOnAudioThread();
     void renderBrowserPreview (juce::AudioBuffer<float>& output);
@@ -313,22 +407,35 @@ private:
                             int currentPosition, int direction) const;
     bool isValidPadIndex (int padIndex) const noexcept;
     bool isValidPatternIndex (int patternIndex) const noexcept;
+    void initialiseHostParameters();
+    bool setHostParameterValue (juce::RangedAudioParameter* parameter,
+                                float denormalisedValue);
+    void markHostParameterStateChanged() noexcept;
     void markPortableSettingsDirty() noexcept;
 
     void handleAsyncUpdate() override;
     void captureCurrentPattern();
+    void capturePatternUndoState (int patternIndex);
     void applyStoredPattern (int patternIndex);
-    void initialisePatternSlot (int patternIndex, bool copyCurrentKit);
+    void initialisePatternSlot (int patternIndex);
     std::shared_ptr<const SampleData> createSampleData (const juce::File& file,
                                                         juce::String& errorMessage);
+    std::unique_ptr<juce::XmlElement> createKitXml() const;
+    juce::Result loadKitXml (const juce::XmlElement& kitXml);
     std::unique_ptr<juce::XmlElement> createPatternXml (int patternIndex) const;
+    std::unique_ptr<juce::XmlElement> createPatternSetXml() const;
+    juce::Result parsePatternXml (int patternIndex,
+                                  const juce::XmlElement& patternXml,
+                                  StoredPattern& destination) const;
     juce::Result loadPatternXmlIntoSlot (int patternIndex,
                                          const juce::XmlElement& patternXml);
+    juce::Result loadPatternSetXml (const juce::XmlElement& patternSetXml);
     juce::Result saveStoredPatternToFile (int patternIndex,
                                            const juce::File& file) const;
 
     void loadPortableSettings();
-    void savePortableSettings();
+    juce::Result savePortableSettings();
+    juce::Result saveBrowserFoldersNow();
     juce::File getPortableSettingsFile() const;
     juce::String makeStoredPath (const juce::File& file) const;
     juce::File resolveStoredPath (const juce::String& storedPath) const;
