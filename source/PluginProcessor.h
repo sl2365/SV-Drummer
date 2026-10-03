@@ -125,6 +125,10 @@ public:
     int getPadOutputBus (int padIndex) const;
     void setPadOutputBus (int padIndex, int outputBus);
     static juce::String getPadOutputBusName (int outputBus);
+    float getPadDelaySend (int padIndex) const;
+    void setPadDelaySend (int padIndex, float amount);
+    float getPadReverbSend (int padIndex) const;
+    void setPadReverbSend (int padIndex, float amount);
     int getPadChokeGroup (int padIndex) const;
     void setPadChokeGroup (int padIndex, int chokeGroup);
     float getPadAmpCurve (int padIndex) const;
@@ -264,6 +268,10 @@ public:
     bool isPatternAssigned (int patternIndex) const;
     bool patternHasSteps (int patternIndex) const;
     juce::String getPatternName (int patternIndex) const;
+    juce::String getCurrentKitName() const;
+    juce::File getCurrentKitFile() const;
+    juce::String getCurrentPatternSetName() const;
+    juce::String getCurrentProjectName() const;
     int getPatternMidiNote (int patternIndex) const;
     void setPatternMidiNote (int patternIndex, int midiNote);
     juce::Result loadPatternIntoSlot (int patternIndex, const juce::File& file);
@@ -279,7 +287,7 @@ public:
     juce::Result loadPatternSetFromFile (const juce::File& file);
     juce::Result savePatternSetToFile (const juce::File& file);
     juce::Result loadKitFromFile (const juce::File& file);
-    juce::Result saveKitToFile (const juce::File& file) const;
+    juce::Result saveKitToFile (const juce::File& file);
     bool kitHasSamples() const;
     juce::Result loadProjectFromFile (const juce::File& file);
     juce::Result saveProjectToFile (const juce::File& file);
@@ -335,6 +343,8 @@ private:
         juce::RangedAudioParameter* pan = nullptr;
         juce::RangedAudioParameter* tune = nullptr;
         juce::RangedAudioParameter* outputBus = nullptr;
+        juce::RangedAudioParameter* delaySend = nullptr;
+        juce::RangedAudioParameter* reverbSend = nullptr;
         juce::RangedAudioParameter* midiNote = nullptr;
         juce::RangedAudioParameter* mute = nullptr;
         juce::RangedAudioParameter* solo = nullptr;
@@ -434,6 +444,8 @@ private:
         std::atomic<float> pan { 0.0f };
         std::atomic<float> tuneSemitones { 0.0f };
         std::atomic<int> outputBus { 0 };
+        std::atomic<float> delaySend { 0.0f };
+        std::atomic<float> reverbSend { 0.0f };
         std::atomic<int> chokeGroup { 0 };
         std::atomic<float> ampCurve { 0.0f };
         std::atomic<float> ampAttackMs { 0.0f };
@@ -492,6 +504,8 @@ private:
         float pan = 0.0f;
         float tuneSemitones = 0.0f;
         int outputBus = 0;
+        float delaySend = 0.0f;
+        float reverbSend = 0.0f;
         int chokeGroup = 0;
         float ampCurve = 0.0f;
         float ampAttackMs = 0.0f;
@@ -587,6 +601,10 @@ private:
     std::atomic<int> patternBars { 1 };
     std::atomic<double> sequencerPatternPositionQuarterNotes { 0.0 };
     std::array<StoredPattern, numberOfPatterns> storedPatterns;
+    juce::String currentKitName { "New Kit" };
+    juce::String currentKitFilePath;
+    juce::String currentPatternSetName { "New Pattern Set" };
+    juce::String currentProjectName { "New Project" };
     KitPadState copiedPad;
     std::atomic<bool> copiedPadAvailable { false };
     StoredPattern copiedPattern;
@@ -621,6 +639,8 @@ private:
 
     juce::AudioFormatManager formatManager;
     juce::AudioBuffer<float> padRenderBuffer;
+    juce::AudioBuffer<float> delaySendBuffer;
+    juce::AudioBuffer<float> reverbSendBuffer;
     std::array<PadFilterDspState, numberOfPads> padFilterDspStates;
     std::array<PadCompressorDspState, numberOfPads> padCompressorDspStates;
     std::array<PadSaturationDspState, numberOfPads> padSaturationDspStates;
@@ -637,7 +657,6 @@ private:
     std::atomic<float> globalReverbMix { 0.20f };
     std::array<std::vector<float>, 2> globalDelayBuffer;
     std::array<float, 2> globalDelayFeedbackLowPass {};
-    juce::AudioBuffer<float> globalReverbDryBuffer;
     int globalDelayWritePosition = 0;
     float globalDelayCurrentSamples = 0.0f;
     float globalDelayBypassMix = 0.0f;
@@ -721,7 +740,6 @@ private:
     void processPadCompressor (int padIndex, juce::AudioBuffer<float>& buffer);
     void processPadSaturation (int padIndex, juce::AudioBuffer<float>& buffer);
     void prepareGlobalEffects();
-    void processGlobalEffects (juce::AudioBuffer<float>& buffer);
     void processGlobalDelay (juce::AudioBuffer<float>& buffer);
     void processGlobalReverb (juce::AudioBuffer<float>& buffer);
     bool anyPadIsSoloed() const;
@@ -772,7 +790,7 @@ private:
                                          const juce::XmlElement& patternXml);
     juce::Result loadPatternSetXml (const juce::XmlElement& patternSetXml);
     juce::Result saveStoredPatternToFile (int patternIndex,
-                                           const juce::File& file) const;
+                                           const juce::File& file);
 
     void loadPortableSettings();
     juce::Result savePortableSettings();

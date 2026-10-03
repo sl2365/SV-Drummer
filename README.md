@@ -11,3 +11,4 @@
 
 ![SV-Drummer-Seq](Resources/SV-Drummer-Seq.jpg)
 ![SV-Drummer-Edit](Resources/SV-Drummer-Edit.jpg)
+![SV-Drummer-Mix](Resources/SV-Drummer-Mix.jpg)

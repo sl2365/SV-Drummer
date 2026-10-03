@@ -1634,6 +1634,54 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
                                          : juce::String ("Trigger");
                 }));
     }
+
+    // Mixer sends were added in v0.10.0. Keep them last so all earlier host
+    // parameter indices remain stable in PHI and DAW projects.
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+        const auto percentageText = [] (float value, int)
+        {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        };
+
+        padHostParameters[index].delaySend = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_delay_send", 1 },
+                namePrefix + "Delay Send",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+                0.0f, "%",
+                [this, index] { return pads[index].delaySend.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 1.0f, value);
+
+                    if (std::abs (pads[index].delaySend.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0, false, percentageText));
+
+        padHostParameters[index].reverbSend = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_reverb_send", 1 },
+                namePrefix + "Reverb Send",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+                0.0f, "%",
+                [this, index] { return pads[index].reverbSend.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 1.0f, value);
+
+                    if (std::abs (pads[index].reverbSend.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0, false, percentageText));
+    }
 }
 
 const juce::String SVDrummerAudioProcessor::getName() const
@@ -1915,12 +1963,16 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     processSequencerTriggers (buffer.getNumSamples());
 
     const bool hasSolo = anyPadIsSoloed();
+    delaySendBuffer.setSize (2, buffer.getNumSamples(), false, false, true);
+    reverbSendBuffer.setSize (2, buffer.getNumSamples(), false, false, true);
+    delaySendBuffer.clear();
+    reverbSendBuffer.clear();
 
     for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
     {
         const auto& pad = pads[static_cast<std::size_t> (padIndex)];
-        const bool outputEnabled = ! pad.muted.load()
-                                && (! hasSolo || pad.soloed.load());
+        const bool outputEnabled = hasSolo ? pad.soloed.load()
+                                           : ! pad.muted.load();
 
         padRenderBuffer.setSize (2, buffer.getNumSamples(),
                                  false, false, true);
@@ -1959,6 +2011,24 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         processPadCompressor (padIndex, padRenderBuffer);
         processPadSaturation (padIndex, padRenderBuffer);
 
+        const float delaySend = juce::jlimit (
+            0.0f, 1.0f, pad.delaySend.load());
+        const float reverbSend = juce::jlimit (
+            0.0f, 1.0f, pad.reverbSend.load());
+
+        for (int channel = 0; channel < padRenderBuffer.getNumChannels(); ++channel)
+        {
+            if (delaySend > 0.0f)
+                delaySendBuffer.addFrom (
+                    channel, 0, padRenderBuffer, channel, 0,
+                    buffer.getNumSamples(), delaySend);
+
+            if (reverbSend > 0.0f)
+                reverbSendBuffer.addFrom (
+                    channel, 0, padRenderBuffer, channel, 0,
+                    buffer.getNumSamples(), reverbSend);
+        }
+
         const int outputBus = juce::jlimit (
             0, numberOfPadOutputBuses, pad.outputBus.load());
         auto destination = getBusBuffer (buffer, false, outputBus);
@@ -1970,9 +2040,21 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                  buffer.getNumSamples());
     }
 
-    // Global effects belong to MAIN. Individually routed pad outputs remain
-    // dry for processing and mixing in the host.
-    processGlobalEffects (mainOutput);
+    // The global effects act as independent stereo aux returns on MAIN.
+    // Per-pad routing remains dry, while every pad may feed either return.
+    processGlobalDelay (delaySendBuffer);
+    processGlobalReverb (reverbSendBuffer);
+
+    const int returnChannels = juce::jmin (
+        mainOutput.getNumChannels(), delaySendBuffer.getNumChannels());
+
+    for (int channel = 0; channel < returnChannels; ++channel)
+    {
+        mainOutput.addFrom (channel, 0, delaySendBuffer, channel, 0,
+                            buffer.getNumSamples());
+        mainOutput.addFrom (channel, 0, reverbSendBuffer, channel, 0,
+                            buffer.getNumSamples());
+    }
 
     if (browserPreviewTriggerPending.exchange (false))
         triggerBrowserPreviewOnAudioThread();
@@ -2979,22 +3061,14 @@ void SVDrummerAudioProcessor::prepareGlobalEffects()
     globalDelayFeedbackLowPass.fill (0.0f);
     globalDelayBypassMix = 0.0f;
     globalDelayWasEnabled = false;
-    globalReverbDryBuffer.setSize (
+    delaySendBuffer.setSize (
+        2, juce::jmax (1, padRenderBuffer.getNumSamples()), false, true);
+    reverbSendBuffer.setSize (
         2, juce::jmax (1, padRenderBuffer.getNumSamples()), false, true);
     globalReverb.setSampleRate (juce::jmax (1.0, currentSampleRate));
     globalReverb.reset();
     globalReverbBypassMix = 0.0f;
     globalReverbWasEnabled = false;
-}
-
-void SVDrummerAudioProcessor::processGlobalEffects (
-    juce::AudioBuffer<float>& buffer)
-{
-    if (buffer.getNumChannels() <= 0 || buffer.getNumSamples() <= 0)
-        return;
-
-    processGlobalDelay (buffer);
-    processGlobalReverb (buffer);
 }
 
 void SVDrummerAudioProcessor::processGlobalDelay (
@@ -3018,6 +3092,7 @@ void SVDrummerAudioProcessor::processGlobalDelay (
             resetDelay();
 
         globalDelayWasEnabled = false;
+        buffer.clear();
         return;
     }
 
@@ -3070,7 +3145,7 @@ void SVDrummerAudioProcessor::processGlobalDelay (
         globalDelayBypassMix += juce::jlimit (
             -bypassRampStep, bypassRampStep,
             targetBypassMix - globalDelayBypassMix);
-        const float effectiveMix = mix * globalDelayBypassMix;
+        const float returnLevel = mix * globalDelayBypassMix;
         globalDelayCurrentSamples += delaySmoothing
             * (targetDelaySamples - globalDelayCurrentSamples);
         float readPosition = static_cast<float> (globalDelayWritePosition)
@@ -3093,12 +3168,10 @@ void SVDrummerAudioProcessor::processGlobalDelay (
             auto& filtered = globalDelayFeedbackLowPass[
                 static_cast<std::size_t> (channel)];
             filtered = delayed + feedbackSmoothing * (filtered - delayed);
-            const float dry = buffer.getSample (channel, sample);
+            const float input = buffer.getSample (channel, sample);
             delay[static_cast<std::size_t> (globalDelayWritePosition)]
-                = dry + std::tanh (filtered) * feedback;
-            buffer.setSample (channel, sample,
-                              dry * (1.0f - effectiveMix)
-                                  + filtered * effectiveMix);
+                = input + std::tanh (filtered) * feedback;
+            buffer.setSample (channel, sample, filtered * returnLevel);
         }
 
         globalDelayWritePosition = (globalDelayWritePosition + 1) % bufferSize;
@@ -3123,6 +3196,7 @@ void SVDrummerAudioProcessor::processGlobalReverb (
             globalReverb.reset();
 
         globalReverbWasEnabled = false;
+        buffer.clear();
         return;
     }
 
@@ -3132,20 +3206,12 @@ void SVDrummerAudioProcessor::processGlobalReverb (
         globalReverbWasEnabled = true;
     }
 
-    globalReverbDryBuffer.setSize (
-        buffer.getNumChannels(), buffer.getNumSamples(),
-        false, false, true);
-
-    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
-        globalReverbDryBuffer.copyFrom (
-            channel, 0, buffer, channel, 0, buffer.getNumSamples());
-
     juce::Reverb::Parameters parameters;
     parameters.roomSize = juce::jlimit (0.0f, 1.0f, globalReverbSize.load());
     parameters.damping = juce::jlimit (0.0f, 1.0f, globalReverbDamping.load());
     parameters.width = juce::jlimit (0.0f, 1.0f, globalReverbWidth.load());
-    parameters.wetLevel = juce::jlimit (0.0f, 1.0f, globalReverbMix.load());
-    parameters.dryLevel = 1.0f - parameters.wetLevel;
+    parameters.wetLevel = 1.0f;
+    parameters.dryLevel = 0.0f;
     parameters.freezeMode = 0.0f;
     globalReverb.setParameters (parameters);
 
@@ -3159,6 +3225,8 @@ void SVDrummerAudioProcessor::processGlobalReverb (
 
     const float bypassRampStep = 1.0f / static_cast<float> (
         juce::jmax (1.0, currentSampleRate * 0.005));
+    const float returnLevel = juce::jlimit (
+        0.0f, 1.0f, globalReverbMix.load());
 
     for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
     {
@@ -3168,11 +3236,9 @@ void SVDrummerAudioProcessor::processGlobalReverb (
 
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
         {
-            const float dry = globalReverbDryBuffer.getSample (channel, sample);
             const float wet = buffer.getSample (channel, sample);
-            buffer.setSample (
-                channel, sample,
-                dry + (wet - dry) * globalReverbBypassMix);
+            buffer.setSample (channel, sample,
+                              wet * returnLevel * globalReverbBypassMix);
         }
     }
 
@@ -3401,6 +3467,8 @@ SVDrummerAudioProcessor::capturePadState (int padIndex) const
     state.pan = pad.pan.load();
     state.tuneSemitones = pad.tuneSemitones.load();
     state.outputBus = pad.outputBus.load();
+    state.delaySend = pad.delaySend.load();
+    state.reverbSend = pad.reverbSend.load();
     state.chokeGroup = pad.chokeGroup.load();
     state.ampCurve = pad.ampCurve.load();
     state.ampAttackMs = pad.ampAttackMs.load();
@@ -3463,6 +3531,8 @@ void SVDrummerAudioProcessor::applyPadState (
     setPadPan (padIndex, state.pan);
     setPadTuneSemitones (padIndex, state.tuneSemitones);
     setPadOutputBus (padIndex, state.outputBus);
+    setPadDelaySend (padIndex, state.delaySend);
+    setPadReverbSend (padIndex, state.reverbSend);
     setPadChokeGroup (padIndex, state.chokeGroup);
     setPadAmpCurve (padIndex, state.ampCurve);
     setPadAmpAttackMs (padIndex, state.ampAttackMs);
@@ -3734,6 +3804,52 @@ juce::String SVDrummerAudioProcessor::getPadOutputBusName (int outputBus)
     const int value = juce::jlimit (0, numberOfPadOutputBuses, outputBus);
     return value == 0 ? juce::String ("MAIN")
                       : "AUX " + juce::String (value);
+}
+
+float SVDrummerAudioProcessor::getPadDelaySend (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].delaySend.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadDelaySend (int padIndex, float amount)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].delaySend,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].delaySend.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadReverbSend (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].reverbSend.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadReverbSend (int padIndex, float amount)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].reverbSend,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].reverbSend.store (value);
+    markPortableSettingsDirty();
 }
 
 int SVDrummerAudioProcessor::getPadChokeGroup (int padIndex) const
@@ -5449,6 +5565,32 @@ juce::String SVDrummerAudioProcessor::getPatternName (int patternIndex) const
     return storedPatterns[static_cast<std::size_t> (patternIndex)].name;
 }
 
+juce::String SVDrummerAudioProcessor::getCurrentKitName() const
+{
+    const juce::ScopedLock lock (stateLock);
+    return currentKitName;
+}
+
+juce::File SVDrummerAudioProcessor::getCurrentKitFile() const
+{
+    const juce::ScopedLock lock (stateLock);
+    return currentKitFilePath.isNotEmpty()
+             ? juce::File (currentKitFilePath)
+             : juce::File();
+}
+
+juce::String SVDrummerAudioProcessor::getCurrentPatternSetName() const
+{
+    const juce::ScopedLock lock (stateLock);
+    return currentPatternSetName;
+}
+
+juce::String SVDrummerAudioProcessor::getCurrentProjectName() const
+{
+    const juce::ScopedLock lock (stateLock);
+    return currentProjectName;
+}
+
 int SVDrummerAudioProcessor::getPatternMidiNote (int patternIndex) const
 {
     return isValidPatternIndex (patternIndex)
@@ -6313,6 +6455,7 @@ std::unique_ptr<juce::XmlElement> SVDrummerAudioProcessor::createKitXml() const
     xml->setAttribute ("version", "1.0");
 
     const juce::ScopedLock lock (stateLock);
+    xml->setAttribute ("name", currentKitName);
 
     for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
     {
@@ -6327,6 +6470,10 @@ std::unique_ptr<juce::XmlElement> SVDrummerAudioProcessor::createKitXml() const
         padXml->setAttribute ("pan", static_cast<double> (pad.pan.load()));
         padXml->setAttribute ("tune", static_cast<double> (pad.tuneSemitones.load()));
         padXml->setAttribute ("outputBus", pad.outputBus.load());
+        padXml->setAttribute ("delaySend", static_cast<double> (
+            pad.delaySend.load()));
+        padXml->setAttribute ("reverbSend", static_cast<double> (
+            pad.reverbSend.load()));
         padXml->setAttribute ("chokeGroup", pad.chokeGroup.load());
         padXml->setAttribute ("ampCurve", static_cast<double> (
             pad.ampCurve.load()));
@@ -6415,6 +6562,14 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
         pad.outputBus = juce::jlimit (
             0, numberOfPadOutputBuses,
             item->getIntAttribute ("outputBus", 0));
+        pad.delaySend = juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "delaySend", 0.0)));
+        pad.reverbSend = juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "reverbSend", 0.0)));
         pad.chokeGroup = juce::jlimit (
             0, numberOfPads, item->getIntAttribute ("chokeGroup", 0));
         pad.ampCurve = juce::jlimit (
@@ -6557,6 +6712,9 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
 
     const juce::ScopedLock lock (stateLock);
 
+    currentKitName = kitXml.getStringAttribute ("name", "New Kit");
+    currentKitFilePath.clear();
+
     for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
     {
         const auto& sourcePad = loaded[static_cast<std::size_t> (padIndex)];
@@ -6574,6 +6732,8 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
         targetPad.pan.store (sourcePad.pan);
         targetPad.tuneSemitones.store (sourcePad.tuneSemitones);
         targetPad.outputBus.store (sourcePad.outputBus);
+        targetPad.delaySend.store (sourcePad.delaySend);
+        targetPad.reverbSend.store (sourcePad.reverbSend);
         targetPad.chokeGroup.store (sourcePad.chokeGroup);
         targetPad.ampCurve.store (sourcePad.ampCurve);
         targetPad.ampAttackMs.store (sourcePad.ampAttackMs);
@@ -6611,15 +6771,23 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
 }
 
 juce::Result SVDrummerAudioProcessor::saveKitToFile (
-    const juce::File& file) const
+    const juce::File& file)
 {
     const auto xml = createKitXml();
+    const auto savedName = file.getFileNameWithoutExtension();
+    xml->setAttribute ("name", savedName);
 
     if (file.getParentDirectory().createDirectory().failed())
         return juce::Result::fail ("The kit folder could not be created.");
 
     if (! file.replaceWithText (xml->toString(), false, false, "\r\n"))
         return juce::Result::fail ("The kit file could not be written.");
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        currentKitName = savedName;
+        currentKitFilePath = file.getFullPathName();
+    }
 
     return juce::Result::ok();
 }
@@ -6639,6 +6807,12 @@ juce::Result SVDrummerAudioProcessor::loadKitFromFile (
 
     if (result.wasOk())
     {
+        {
+            const juce::ScopedLock lock (stateLock);
+            currentKitName = file.getFileNameWithoutExtension();
+            currentKitFilePath = file.getFullPathName();
+        }
+
         relinkMissingSamplesFromFolder (file.getParentDirectory(), false);
         markPortableSettingsDirty();
     }
@@ -6706,6 +6880,11 @@ SVDrummerAudioProcessor::createPatternSetXml() const
     xml->setAttribute ("version", "1.3");
     xml->setAttribute ("type", "pattern-set");
     xml->setAttribute ("current", getCurrentPatternIndex());
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        xml->setAttribute ("name", currentPatternSetName);
+    }
 
     auto* playbackXml = xml->createNewChildElement ("PATTERN_PLAYBACK");
     playbackXml->setAttribute ("steps", encodePatternPlaybackSteps());
@@ -6805,6 +6984,9 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetXml (
         || patternSetXml.getStringAttribute ("type") != "pattern-set")
         return juce::Result::fail ("This is not an SV-Drummer pattern-set file.");
 
+    const auto loadedPatternSetName = patternSetXml.getStringAttribute (
+        "name", "New Pattern Set");
+
     pendingPatternPlaybackSelection.store (-1);
     patternPlaybackSwitchPending.store (false);
 
@@ -6888,22 +7070,36 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetXml (
     currentPatternIndex.store (restoredPattern);
     applyStoredPattern (restoredPattern);
     refreshPatternPlaybackBars();
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        currentPatternSetName = loadedPatternSetName;
+    }
+
     return juce::Result::ok();
 }
 
 juce::Result SVDrummerAudioProcessor::saveStoredPatternToFile (
-    int patternIndex, const juce::File& file) const
+    int patternIndex, const juce::File& file)
 {
     const auto xml = createPatternXml (patternIndex);
 
     if (xml == nullptr)
         return juce::Result::fail ("Invalid pattern slot.");
 
+    const auto savedName = file.getFileNameWithoutExtension();
+    xml->setAttribute ("name", savedName);
+
     if (file.getParentDirectory().createDirectory().failed())
         return juce::Result::fail ("The pattern folder could not be created.");
 
     if (! file.replaceWithText (xml->toString(), false, false, "\r\n"))
         return juce::Result::fail ("The pattern file could not be written.");
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        storedPatterns[static_cast<std::size_t> (patternIndex)].name = savedName;
+    }
 
     return juce::Result::ok();
 }
@@ -6927,6 +7123,8 @@ juce::Result SVDrummerAudioProcessor::loadPatternIntoSlot (
 
     if (result.failed())
         return result;
+
+    loaded.name = file.getFileNameWithoutExtension();
 
     captureCurrentPattern();
     capturePatternUndoState (patternIndex);
@@ -7111,12 +7309,19 @@ juce::Result SVDrummerAudioProcessor::savePatternSetToFile (
 {
     captureCurrentPattern();
     const auto xml = createPatternSetXml();
+    const auto savedName = file.getFileNameWithoutExtension();
+    xml->setAttribute ("name", savedName);
 
     if (file.getParentDirectory().createDirectory().failed())
         return juce::Result::fail ("The Pattern Set folder could not be created.");
 
     if (! file.replaceWithText (xml->toString(), false, false, "\r\n"))
         return juce::Result::fail ("The Pattern Set file could not be written.");
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        currentPatternSetName = savedName;
+    }
 
     return juce::Result::ok();
 }
@@ -7136,6 +7341,11 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetFromFile (
 
     if (result.wasOk())
     {
+        {
+            const juce::ScopedLock lock (stateLock);
+            currentPatternSetName = file.getFileNameWithoutExtension();
+        }
+
         // Loading a library Pattern Set must always leave transport stopped.
         // This also clears any pending GATE or HOLD trigger state.
         stopPatternMidiPlayback();
@@ -7150,8 +7360,10 @@ juce::Result SVDrummerAudioProcessor::saveProjectToFile (
 {
     captureCurrentPattern();
     auto projectXml = std::make_unique<juce::XmlElement> ("SVDRUMMER_PROJECT");
+    const auto savedName = file.getFileNameWithoutExtension();
     projectXml->setAttribute ("version", "1.0");
     projectXml->setAttribute ("type", "project");
+    projectXml->setAttribute ("name", savedName);
     const auto midiMode = getPatternMidiMode();
     projectXml->setAttribute ("midiMode", patternMidiModeToString (midiMode));
     projectXml->setAttribute (
@@ -7174,6 +7386,11 @@ juce::Result SVDrummerAudioProcessor::saveProjectToFile (
 
     if (! file.replaceWithText (projectXml->toString(), false, false, "\r\n"))
         return juce::Result::fail ("The Project file could not be written.");
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        currentProjectName = savedName;
+    }
 
     return juce::Result::ok();
 }
@@ -7228,6 +7445,12 @@ juce::Result SVDrummerAudioProcessor::loadProjectFromFile (
     stopPatternMidiPlayback();
     setSampleMarkerSnapEnabled (
         projectXml->getBoolAttribute ("markerSnap", false));
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        currentProjectName = file.getFileNameWithoutExtension();
+    }
+
     markPortableSettingsDirty();
     return juce::Result::ok();
 }
@@ -7627,8 +7850,19 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "9.11.0");
+    state.setAttribute ("version", "10.4.0");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        state.setAttribute ("kitName", currentKitName);
+        state.setAttribute (
+            "kitFile", currentKitFilePath.isNotEmpty()
+                           ? makeStoredPath (juce::File (currentKitFilePath))
+                           : juce::String());
+        state.setAttribute ("patternSetName", currentPatternSetName);
+        state.setAttribute ("projectName", currentProjectName);
+    }
 
     auto* sequencer = state.createNewChildElement ("SEQUENCER");
     const auto midiMode = getPatternMidiMode();
@@ -7661,6 +7895,10 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         item->setAttribute ("pan", static_cast<double> (getPadPan (padIndex)));
         item->setAttribute ("tune", static_cast<double> (getPadTuneSemitones (padIndex)));
         item->setAttribute ("outputBus", getPadOutputBus (padIndex));
+        item->setAttribute ("delaySend", static_cast<double> (
+            getPadDelaySend (padIndex)));
+        item->setAttribute ("reverbSend", static_cast<double> (
+            getPadReverbSend (padIndex)));
         item->setAttribute ("chokeGroup", getPadChokeGroup (padIndex));
         item->setAttribute ("ampCurve", static_cast<double> (
             getPadAmpCurve (padIndex)));
@@ -7760,6 +7998,19 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
     sampleMarkerSnapEnabled.store (
         state->getBoolAttribute ("markerSnap", false));
 
+    {
+        const juce::ScopedLock lock (stateLock);
+        currentKitName = state->getStringAttribute ("kitName", "New Kit");
+        const auto storedKitFile = state->getStringAttribute ("kitFile");
+        currentKitFilePath = storedKitFile.isNotEmpty()
+                               ? resolveStoredPath (storedKitFile).getFullPathName()
+                               : juce::String();
+        currentPatternSetName = state->getStringAttribute (
+            "patternSetName", "New Pattern Set");
+        currentProjectName = state->getStringAttribute (
+            "projectName", "New Project");
+    }
+
     if (auto* sequencer = state->getChildByName ("SEQUENCER"))
     {
         patternMidiMode.store (static_cast<int> (patternMidiModeFromString (
@@ -7817,6 +8068,14 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
         pad.outputBus.store (juce::jlimit (
             0, numberOfPadOutputBuses,
             item->getIntAttribute ("outputBus", 0)));
+        pad.delaySend.store (juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "delaySend", 0.0))));
+        pad.reverbSend.store (juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "reverbSend", 0.0))));
         pad.chokeGroup.store (juce::jlimit (
             0, numberOfPads, item->getIntAttribute ("chokeGroup", 0)));
         pad.ampCurve.store (juce::jlimit (

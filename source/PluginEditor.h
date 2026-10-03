@@ -58,7 +58,7 @@ private:
 
     juce::TextButton sequencerViewButton { "SEQUENCER" };
     juce::TextButton settingsViewButton { "PAD SETTINGS" };
-    juce::TextButton fxViewButton { "FX" };
+    juce::TextButton fxViewButton { "FX + Mixer" };
     int activeView = 0;
     bool initialLayoutComplete = false;
     bool zoomSavePending = false;

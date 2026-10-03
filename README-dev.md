@@ -1,11 +1,39 @@
-# SV-Drummer v0.9.11
+# SV-Drummer v0.10.4
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
-This corrective source release draws the LOOP-to-NORMAL/PING-PONG link above
-the waveform component so it remains visible. The GUI version is now derived
-from the build version, preventing the displayed and compiled versions from
-diverging.
+Version 0.10.0 adds a sixteen-channel per-pad mixer to the FX + Mixer tab. Each strip
+provides Volume, Pan, Output, Mute, Solo, Delay Send and Reverb Send controls in
+two rows of eight. The mixer mirrors the existing pad controls, and its new
+post-fader sends feed independent global Delay and Reverb returns on MAIN.
+
+Version 0.10.1 restores the complete Mute button letter in every compact mixer
+strip, makes the PAN fader fill outward from its centre position, and renames
+the main tab to `FX + Mixer`.
+
+Version 0.10.2 restores the PAN fader's complete background track while
+retaining its centre-origin bipolar fill. When any pad is soloed, Solo now
+temporarily overrides that pad's stored Mute state; removing Solo restores the
+Mute behaviour. Drum-pad and sequencer-lane dimming follows the same rule.
+
+Version 0.10.3 extends the PAN handle and bipolar fill to the normal full fader
+travel. At maximum Left or Right, its handle centre now aligns with the Volume,
+Delay Send and Reverb Send handles at their corresponding extremes.
+
+Version 0.10.4 gives all four controls in every mixer strip an identical-width
+fader cell. This removes the final-cell rounding difference so the Reverb Send
+stalk and endpoint positions exactly match Delay Send.
+
+Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
+brightens the relevant idle button borders and hover states, and adds distinct
+Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
+prefills the active item's existing name, while Save As uses the original
+generic name.
+
+Version 0.9.13 retains the exact loaded Kit file for subsequent normal saves,
+including Kits created before names were embedded in the file. Sequencer lanes
+now follow the same effective mute/solo display rule as the drum pads: muted
+lanes and every non-soloed lane are darkened whenever Solo is active.
 
 ## Permanent identity
 
@@ -14,7 +42,7 @@ diverging.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `0.9.5`
+- Version: `0.10.4`
 
 ## Current features
 
@@ -39,7 +67,9 @@ diverging.
 - Switchable stereo-linked compressor on every pad, with Threshold, Ratio,
   Attack, Release and Knee controls.
 - Switchable soft-saturation and hard-clipping intensity controls on every pad.
-- Global Delay and Reverb on MAIN, stored with Projects and host session state.
+- Sixteen-channel per-pad mixer with Volume, Pan, Output, Mute, Solo, Delay Send
+  and Reverb Send; the two effect sends are stored with Kits and host state.
+- Global Delay and Reverb returns on MAIN, stored with Projects and host state.
 - Sixteen per-pad choke groups; pads sharing a non-zero group cut each other off.
 - High-detail per-pad waveform editor with draggable playback START and END markers.
 - Per-pad sample looping with a LOOP switch, NORMAL/PING-PONG playback and
@@ -608,8 +638,9 @@ as one complete section.
 A third main tab, FX, contains separately bordered global Delay and Reverb
 panels. Delay provides Time, Feedback and Mix; Reverb provides Size, Damping,
 Width and Mix. Each effect has its own amber enable LED. Global FX process the
-complete drum mix, remain outside Kit and Pattern data, and are saved in
-Projects and host session state.
+complete drum mix in this original implementation, remain outside Kit and
+Pattern data, and are saved in Projects and host session state. Version 0.10.0
+replaces that insert routing with the per-pad sends described below.
 
 Version 0.8.3 standardises the FX controls to the same knob dimensions, label
 font, value font and styling used elsewhere in the interface. The only accented
@@ -752,6 +783,16 @@ mode belongs to the LOOP function. When one or more pads are soloed, every
 non-soloed pad now receives the same visual darkening as a muted pad. Their Mute
 indicators remain unchanged because those pads are only being silenced by the
 Solo state.
+
+Version 0.10.0 adds the MIXER below Delay and Reverb in the FX tab. Sixteen
+compact channel strips are arranged as Pads 1–8 and 9–16. Volume, Pan, Output,
+Mute and Solo mirror the same pad parameters shown elsewhere. Delay Send and
+Reverb Send are independent post-fader, post-pan and post-pad-effect levels;
+they respect Mute/Solo and may feed the MAIN effect returns even when the pad's
+dry signal is assigned to an AUX output. Send levels default to zero, are Kit
+data, copy and paste with a pad, save in Projects and host state, and are
+available as host automation parameters. The global Delay/Reverb Mix controls
+now set their return levels.
 
 ## Pattern buttons
 
