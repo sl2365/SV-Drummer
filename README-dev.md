@@ -1,6 +1,11 @@
-# SV-Drummer v0.7.12
+# SV-Drummer v0.9.11
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
+
+This corrective source release draws the LOOP-to-NORMAL/PING-PONG link above
+the waveform component so it remains visible. The GUI version is now derived
+from the build version, preventing the displayed and compiled versions from
+diverging.
 
 ## Permanent identity
 
@@ -9,7 +14,7 @@ Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `0.7.12`
+- Version: `0.9.5`
 
 ## Current features
 
@@ -22,16 +27,31 @@ Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 - MIDI notes 36–51 by default; click or mouse-wheel the note field to change it.
 - Mouse and MIDI pad triggering with MIDI velocity.
 - Per-pad mute, solo, volume, pan, tune and reverse controls.
+- Mouse-wheel pad Volume adjustment with a four-pixel level bar inside the
+  right side of every pad; the existing Volume knobs remain available.
+- MAIN stereo output plus sixteen optional stereo pad outputs. Every pad defaults
+  to MAIN and has a visible OUTPUT selector in the Pad Settings title row.
 - Per-pad amplitude envelope with Attack, Decay, Sustain and Release.
+- Switchable per-pad multimode filter with LPF, BPF, HPF, Notch, Comb, Formant
+  and Ladder modes, plus resonance and drive. Filter type and 6/12/24/48 dB
+  slope are selected from scrollable drop-downs.
+- Independent per-pad low-cut HPF for removing unwanted low end.
+- Switchable stereo-linked compressor on every pad, with Threshold, Ratio,
+  Attack, Release and Knee controls.
+- Switchable soft-saturation and hard-clipping intensity controls on every pad.
+- Global Delay and Reverb on MAIN, stored with Projects and host session state.
 - Sixteen per-pad choke groups; pads sharing a non-zero group cut each other off.
 - High-detail per-pad waveform editor with draggable playback START and END markers.
-- Per-pad sample looping with a LOOP switch and draggable LS/LE waveform markers.
+- Per-pad sample looping with a LOOP switch, NORMAL/PING-PONG playback and
+  draggable LS/LE waveform markers.
 - Exact sample-frame START, END, L-START and L-END positions with wheel editing.
 - Optional zero-crossing SNAP for click-resistant trim and loop boundaries.
 - Continuous, time-ordered waveform tracing through every zero crossing.
 - Cursor-centred mouse-wheel waveform zoom for precise START and END editing.
+- Horizontal mouse-wheel tilt nudges the visible range of a zoomed waveform.
 - Draggable full-sample overview bar for scrolling the zoomed waveform.
 - Browser Preview button for auditioning a selected sample without loading a pad.
+- Right-click an audio file in the Browser tree to preview it immediately.
 - Portable settings under `dist\Data\Settings`.
 - Portable GUI zoom restored from `dist\Data\Settings\SV-Drummer.ini` and
   saved when the editor closes.
@@ -40,6 +60,10 @@ Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
   Refresh button.
 - Every Browser mode has an Open Folder button for its active library location.
 - Sixteen-lane host-synchronised step sequencer with sample-accurate triggering.
+- Global Pattern playback lane beneath Lane 16, with sixteen Pattern-selection
+  cells per bar and `OFF`/Pattern 1–16 mouse-wheel editing.
+- Saved amber Pattern-chain enable LED in the lane header; disabling the chain
+  preserves its cells while allowing the currently selected Pattern to repeat.
 - An independent timing division and loop length for every lane.
 - Per-step velocity, adjusted with the mouse wheel over an active step.
 - Pattern length from 1 to 16 bars, with switchable 1-, 2- or 4-bar views.
@@ -50,18 +74,22 @@ Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 - Sixteen working Pattern buttons, each storing sixteen Sequences: one per lane.
 - Pattern menus can generate an undoable random rhythm across all sixteen lanes.
 - Pattern slots can be selected manually or by an optional custom MIDI note.
-- Pattern MIDI notes support SELECT, momentary GATE and latched HOLD modes.
+- Pattern MIDI notes support MANUAL, momentary GATE and latched HOLD modes.
 - Portable `.svpattern` files containing one Pattern button's sixteen Sequences.
 - Portable `.svpatternset` files containing the complete set of sixteen Patterns.
 - Portable `.svkit` files containing all sixteen pads and their settings.
 - Portable `.svproject` files containing the complete Kit and Pattern Set.
+- Browser file choosers for loading Kits and individual Patterns from anywhere
+  on disk, plus a PATTERNS menu command for loading complete Pattern Sets.
+- Drum-pad Clear, Copy and Paste context commands for complete pad assignments
+  and settings.
 - Missing Project or Kit samples can be relinked from a chosen folder without
   changing any saved pad settings.
 - Kit, Pattern Set and sequencer data saved in the host-managed plug-in state.
 - Browser folders, selection and scroll position restore when the editor reopens.
 - ASCII-only header status text for reliable display on Windows hosts.
 
-Filter and LFO controls remain reserved for later stages.
+LFO controls remain reserved for a later stage.
 
 Stage 1.1 corrects the Windows `max` macro collision reported by the first
 Visual Studio 2026 build.
@@ -172,7 +200,7 @@ viewport shading. It therefore remains continuously visible across both the
 main waveform and the full-sample overview.
 
 Stage 4.6 adds a MIDI MODE control beside the enlarged transport button.
-`SELECT` preserves the original behaviour: assigned MIDI notes select patterns
+`MANUAL` preserves the original behaviour: assigned MIDI notes select patterns
 while the transport remains manually controlled and follows the host timeline.
 `GATE` makes each assigned pattern note momentary: note-on selects the pattern,
 turns Play on and restarts at Step 1 using the host BPM; note-off turns Play off
@@ -256,7 +284,7 @@ steps use a larger uniform pastel-red indicator dot. SNAP's inactive styling now
 matches the inactive REVERSE and LOOP buttons.
 
 Stage 6.2 makes the Sequencer scrollbar thinner and lifts the top controls away
-from the ruler divider. MIDI MODE now uses grey for SELECT, blue for GATE and a
+from the ruler divider. MIDI MODE now uses grey for MANUAL, blue for GATE and a
 distinct violet for HOLD. Empty pads retain their normal text while their border,
 footer and selection colour are subtly darkened.
 
@@ -363,8 +391,8 @@ when closed and restores that value next time.
 
 Version 0.7.8 adds the Projects Browser tab and portable `.svproject` files. A
 Project restores the complete Kit, all sample paths and pad settings, the full
-sixteen-Pattern Set, Pattern MIDI-note assignments, MIDI mode, transport state
-and SNAP setting. Projects default to `Data\Projects` and can be dragged onto
+sixteen-Pattern Set, Pattern MIDI-note assignments, MIDI mode and SNAP setting.
+Projects default to `Data\Projects` and can be dragged onto
 any pad or Pattern button, with confirmation before replacing existing content.
 
 The four Browser modes now use icon tabs. A single Refresh button in the
@@ -429,6 +457,301 @@ PHI a normal parameter-change callback as well as the VST3 non-parameter-state
 notification, ensuring that its next saved or recalled session contains the
 current SV-Drummer state. Host parameters are state-backed, so restoring the
 existing SV-Drummer state chunk immediately restores their displayed values.
+
+Version 0.7.13 makes Pattern Set loading transport-safe. Loading a
+`.svpatternset` always leaves the Sequencer stopped and clears any pending GATE
+or HOLD latch; it never starts playback merely because a set was loaded.
+
+The second host-automation stage adds each pad's MIDI note, Mute, Solo, Reverse,
+Choke Group, Attack, Decay, Sustain, Release and Loop controls. Together with
+the v0.7.12 controls, PHI and other hosts now see 212 automatable parameters.
+The earlier parameter IDs and ordering remain unchanged, and sample marker
+positions remain internal because their valid ranges depend on the loaded audio
+file.
+
+Version 0.7.14 separates manual Project loading from transport state. Newly
+saved `.svproject` files write `sequencerEnabled="0"`, and loading a Project
+always stops the Sequencer even when an older file contains
+`sequencerEnabled="1"`. MIDI Mode is still restored, but playback remains under
+the user's control.
+
+Browser root folders are now ordered automatically. Built-in portable folders
+remain pinned at the top in their intended order, while user-added sample
+folders are sorted alphabetically by folder name. Subfolders and files retain
+their existing alphabetical sorting, and saved tree openness continues to use
+full paths so sorting does not lose the focused Browser location.
+
+Version 0.7.15 adds the third host-automation stage. Every Sequencer lane now
+exposes its Division and Loop Length as independent PHI/DAW parameters, adding
+32 controls and bringing the visible automation total to 244. Division values
+use the same musical names as the interface, while Loop Length is constrained
+to the current Pattern length and that lane's Division. Existing parameter IDs
+and ordering remain unchanged because these controls are appended after the
+v0.7.13 parameter set.
+
+Pattern selection is deliberately not automated in this stage because Pattern
+replacement must be marshalled safely away from the real-time audio callback.
+Sample markers also remain internal because their valid ranges depend on the
+length of the loaded sample.
+
+Version 0.7.16 adds a complete per-pad filter stage to PAD SETTINGS. Each pad
+has its own 20 Hz–20 kHz Cutoff, Resonance, 0–24 dB Drive and selectable Off,
+LPF, BPF, HPF or Comb Type. A separate Off–2 kHz HPF is available as a simple
+low-cut control, independently of the selected main-filter Type.
+
+All five controls are Kit data. They are preserved in `.svkit` and `.svproject`
+files and in the host-managed plug-in state, without becoming part of Pattern
+or Pattern Set files. They also add 80 stable PHI/DAW automation parameters,
+bringing the visible total to 324 while retaining all earlier parameter IDs and
+ordering.
+
+REVERSE, LOOP and SNAP now occupy the left side of the waveform's header row.
+START, END, L-START and L-END remain together on the right, leaving the lower
+Pad Settings row available for the five new filter controls.
+
+Version 0.7.17 adds a switchable compressor to every pad after its filter stage.
+The compressor uses stereo-linked detection to preserve the pad's left/right
+balance and provides Threshold (-60–0 dB), Ratio (1:1–20:1), Attack
+(0.1–100 ms), Release (10–1000 ms) and Knee (0–24 dB). `COMP OFF` is a true
+bypass and changes to `COMP ON` when enabled.
+
+Compressor settings are Kit data and are preserved in `.svkit`, `.svproject`
+and host session state, while remaining independent of Patterns and Pattern
+Sets. The six controls per pad add 96 PHI/DAW automation parameters, bringing
+the visible automation total to 420 without changing earlier parameter IDs or
+ordering.
+
+Version 0.7.18 reorganises PAD SETTINGS into two control rows with left-aligned
+AMP, FILTER, COMPRESSOR and SATURATION headings and vertical section dividers.
+The instruction line beneath the controls has been removed and the panel's
+vertical margins tightened, keeping the waveform useful without increasing the
+overall interface size.
+
+Volume, Pan and Tune have moved from the Sequencer back into the AMP section and
+now use the standard knob colour. The AMP section is arranged as A/D/S/R above
+Volume/Pan/Tune/Choke. Filter Drive now remains active when Filter Type is OFF,
+allowing it to colour a pad independently of the main filter shape.
+
+SATURATION adds separate 0–100% `SAT` soft-saturation and `HARD CLIP` intensity
+knobs, following the compressor in each pad's processing chain. Both are Kit
+settings stored in `.svkit`, `.svproject` and host session state, not Patterns.
+The two controls per pad add 32 PHI/DAW automation parameters, bringing the
+visible total to 452 while preserving all earlier parameter IDs and ordering.
+
+Version 0.7.19 increases the base interface height so both PAD SETTINGS control
+rows can use larger knobs with a clearer gap between them. The extra height is
+also applied to the Sequencer panel without changing or rearranging any of its
+controls. PAD SETTINGS reserves a taller control area while leaving more height
+for the waveform editor than the previous two-row layout.
+
+SAT now uses a continuous soft-clipping transfer based on the supplied TAL Drum
+reference sweep. HARD CLIP is a true variable-threshold clipper with no clean
+signal mixed back in, producing clearly flat waveform peaks at stronger values.
+Both nonlinear stages compensate for Pad Volume and constant-power Pan before
+processing and restore them afterwards, so quiet or centred pads are distorted
+properly rather than merely becoming louder.
+
+Version 0.7.20 reduces the two PAD SETTINGS knob rows to the same 66-pixel row
+height used by the Sequencer's top-bar knobs. The overall interface and tab
+panel are reduced by the same 38 pixels, preserving the expanded waveform
+editor height and the existing ten-pixel gap between the two control rows.
+
+Projects in the Browser now load by double-click instead of being dragged from
+the Project tree. An empty current Project is replaced immediately; when the
+current Kit contains samples or the Pattern Set contains steps, SV-Drummer asks
+for confirmation first. Pattern and Pattern Set Browser behaviour is unchanged.
+
+Version 0.8.0 is Stage 8. Empty pads now use 35% of their original colour
+brightness, down from 45%, while leaving their text unchanged. SAT's soft-clip
+shape is approximately 27% stronger; the HARD CLIP transfer is unchanged.
+
+Every drum pad now has a right-click menu. `Clear` confirms before restoring the
+pad to its default empty state, including its default MIDI note and every pad
+setting. `Copy` and `Paste` transfer the sample assignment, sample path, trim and
+loop markers, MIDI assignment, AMP, filter, compressor and saturation settings.
+The clipboard lasts for the current plug-in instance.
+
+Right-clicking an audio file in the Samples Browser now previews it immediately,
+using the same audition function as the Browser's Preview button.
+Dedicated Load buttons in the Kits and Patterns tabs open file choosers for an
+arbitrary `.svkit` or `.svpattern`; an occupied destination is confirmed before
+replacement. `PATTERNS` > `MENU` > `Load Pattern Set` similarly browses for an
+arbitrary `.svpatternset` and confirms before replacing a non-empty set.
+
+Version 0.8.1 makes the CHOKE control display `OFF` immediately when its loaded
+value is zero. It also adds a global seventeenth Sequencer row labelled
+`PATTERN`. The row always contains sixteen fixed 1/16-note cells per bar;
+mouse-wheel over a cell selects `OFF` or Pattern 1–16. A numbered cell switches
+to that Pattern at its playback boundary, while `OFF` marks the end of the
+configured chain.
+
+The Pattern playback row is a sixteen-slot playback chain. Each slot selects one
+of the sixteen Patterns and remains highlighted while that Pattern plays for its
+full saved bar length. Playback then advances to the next chain slot; an `OFF`
+slot either stops the SV-Drummer sequencer or returns it to slot 1 when chain
+Loop is enabled. An untouched row whose first slot is `OFF` leaves normal
+single-Pattern looping unchanged. The chain belongs to the
+complete Pattern Set, so it is stored in `.svpatternset`, `.svproject` and host
+session state, but not in individual `.svpattern` or `.svkit` files.
+
+Version 0.8.2 restores PAD VOL, PAD PAN and PAD TUNE to the Sequencer top bar
+while retaining the same controls in Pad Settings. Both sets edit the same
+per-pad Kit values; the Sequencer copies follow the selected lane and adopt its
+pad colour.
+
+The Pad Settings Filter Type control is now a mouse-wheel-enabled drop-down
+containing LPF, BPF, HPF and COMB. Filter, Compressor and Saturation use compact
+clickable amber status LEDs aligned with their section headings. Switching the
+Filter LED off bypasses the filter type, Drive and the independent low-cut HPF
+as one complete section.
+
+A third main tab, FX, contains separately bordered global Delay and Reverb
+panels. Delay provides Time, Feedback and Mix; Reverb provides Size, Damping,
+Width and Mix. Each effect has its own amber enable LED. Global FX process the
+complete drum mix, remain outside Kit and Pattern data, and are saved in
+Projects and host session state.
+
+Version 0.8.3 standardises the FX controls to the same knob dimensions, label
+font, value font and styling used elsewhere in the interface. The only accented
+variants remain the Sequencer's PAD VOL, PAD PAN and PAD TUNE controls, whose
+colour follows the selected pad. The SEQUENCER, PAD SETTINGS and FX tab buttons
+now also have identical widths.
+
+Delay TIME can switch between FREE milliseconds and host-synchronised timing.
+SYNC offers `1`, `1/2`, `1/3`, `1/4`, `1/4T`, `1/8`, `1/8T`, `1/16`, `1/16T`,
+`1/32`, `1/32T` and `1/64`. The feedback path now uses smoothly changing delay
+time, bandwidth limiting and soft saturation to avoid zipper noise and harsh
+digital feedback buildup. FREE/SYNC state and the selected division are saved
+with Projects and host session state.
+
+Version 0.8.4 changes the Pattern row from a bar-following step lane into the
+sixteen-slot Pattern chain described above. Its active slot is independent of
+the bar playhead and stays selected for the complete length of the Pattern it
+launches. Right-clicking a pad-lane header now provides Copy, Paste, Random,
+Clear and one-level Undo; the Pattern-chain header provides Clear and Undo.
+The Delay FREE/SYNC control now sits beside its knobs, and disabling the Filter
+section bypasses Drive and low-cut HPF as well as the selected filter type.
+
+Version 0.8.5 adds a saved Loop setting to the Pattern-chain header menu. With
+Loop off, the chain stops at its first `OFF` slot or after slot 16. With Loop on,
+that boundary returns to slot 1 and the Pattern row changes to dark aqua. The
+new Sequencer SYNC MODE cycles through PLAYED, BAR and BEAT: PLAYED switches
+immediately, while BAR and BEAT defer MIDI-triggered and clicked Pattern changes
+to the next matching host boundary. Sync Mode is exposed as a host parameter
+and is saved in Projects and host session state. The Delay FREE/SYNC button now
+sits to the left of TIME, and the Pad Settings section titles are larger with
+the Saturation LED moved into the right margin.
+
+Version 0.8.6 adds a saved amber enable LED to the Pattern-chain header. When
+disabled, the complete chain remains stored and editable but playback ignores
+it, allowing the selected Pattern to repeat and MIDI/manual Pattern changes to
+remain dynamic. HOLD mode now keeps the current Pattern playing while a BAR- or
+BEAT-synchronised MIDI selection waits for its boundary. Per-pad filters add
+Formant and nonlinear Ladder types plus a separate scrollable 6, 12, 24 or
+48 dB slope selector. Filter slope is included in Kits, Projects, pad copy/paste
+and host session state.
+
+Version 0.8.7 adds a Notch filter and corrects the filter Type/Slope combo-box
+interaction. Popup choices are no longer overwritten by the 20 Hz UI refresh,
+wheel movement is accumulated instead of skipping entries, and smaller arrows
+and fitted text keep the selected value readable. MIDI MODE `SELECT` is renamed
+to `MANUAL`. Each pad now stores a NORMAL or PING-PONG loop mode; Ping-Pong
+reflects playback between LS and LE. Mouse pad and waveform audition also send
+note release when the mouse is released, using the existing AMP Release time.
+
+Version 0.8.8 makes each Filter Type/Slope wheel event move exactly one entry,
+removing multi-item jumps and stale accumulated movement. Their selected-value
+font and control height are larger while retaining the compact arrow. Tilting a
+mouse wheel left or right over a zoomed waveform now nudges its visible range
+horizontally, while the existing vertical wheel action continues to zoom.
+
+Version 0.9.0 adds a fixed multi-output VST3 layout: stereo MAIN plus sixteen
+optional stereo buses now named AUX 1 through AUX 16. All pads default to MAIN, so
+ordinary stereo operation is unchanged. The Pad Settings title row contains a
+visible OUTPUT selector for the selected pad. A pad routed to an individual
+output is removed from MAIN, preventing doubled audio. Auxiliary outputs are
+dry for host processing; the global Delay and Reverb, and Browser preview,
+remain on MAIN. Hosts must enable or connect the optional output buses before
+they can be heard.
+
+These names identify logical stereo plug-in buses rather than fixed sound-card
+connectors. If a host flattens every enabled bus into one channel list, MAIN is
+channels 1+2, AUX 1 is 3+4, AUX 2 is 5+6, and so on. A DAW or host can instead
+route any of those buses to mixer tracks, MAIN, or any available hardware
+output pair.
+
+Output assignments are per-pad Kit settings. They are preserved in `.svkit`,
+`.svproject`, pad Copy/Paste and host session state, but never in Patterns or
+Pattern Sets. Sixteen appended `Pad N Output` host parameters expose the
+assignments without changing any established parameter IDs or indices.
+
+Version 0.9.1 prevents paired Windows wheel callbacks from skipping entries in
+the Filter Type and Slope selectors. A short same-direction debounce makes one
+physical wheel movement advance exactly one item. Each drum pad also gains a
+duplicate Volume workflow for evaluation: scrolling anywhere over the pad
+except its MIDI-note field adjusts the existing per-pad Volume in 0.5 dB steps.
+A four-pixel vertical track on the pad's inside-right edge shows the complete
+-60 to +6 dB range in the background and the current pad-coloured level in the
+foreground. The AMP and Sequencer Volume knobs remain unchanged in this test.
+
+Version 0.9.2 fills the complete pad-volume reference track with the same grey
+previously used for its outline. Scrolling a pad now also displays the resulting
+Volume value in a temporary tooltip for two seconds; continued scrolling resets
+the two-second display time.
+
+Version 0.9.3 restores the dark hollow pad-volume track and makes its outline
+more obvious by increasing it from 24% to 48% opacity and from 0.75 to 1 pixel.
+The wheel-adjustment value now uses an independent popup which remains visible
+continuously and closes two seconds after the final wheel movement.
+
+Version 0.9.4 moves the pad-volume popup to the left side of the cursor so it
+does not cover the volume bar. The smaller popup now shows only the value and
+unit, for example `-2.9 dB`.
+
+Version 0.9.5 replaces the AMP section's duplicate Volume knob with a per-pad
+bipolar `CURVE` control. `0.00` preserves the previous linear attack, negative
+values produce a faster concave rise and positive values produce a slower
+convex rise. The audible AMP attack and live waveform envelope use the same
+curve. CURVE is Kit data and is included in `.svkit`, `.svproject`, pad
+Copy/Paste and host session state. Pad-wheel Volume and the Sequencer's Pad
+Volume knob remain available.
+
+The OUTPUT selector is moved up two pixels to centre it in the PAD SETTINGS
+header. Filter, Compressor, Saturation, global Delay and global Reverb now use
+five-millisecond dry/wet bypass ramps, preventing abrupt On/Off discontinuities
+during live playback.
+
+Version 0.9.6 changes the negative AMP CURVE to the true mirrored counterpart
+of the existing positive curve. Fully left now produces a smooth concave attack
+instead of the previous near-vertical initial rise, while the positive curve is
+unchanged. Every rotary control is four pixels larger in diameter and its
+indicator ring is two pixels thinner. Symmetrical bipolar controls such as
+CURVE, PAN and TUNE now draw their coloured indicator arc outward from the
+centre/zero position.
+
+Version 0.9.7 adds a per-pad `TRIGGER`/`GATED` sequencer playback button to the
+waveform header. TRIGGER retains the existing one-shot behaviour. GATED treats
+each active sequencer step as a note: the step start triggers the pad and the
+next step boundary releases it through that pad's AMP Release setting. This
+also gives looped samples a natural sequencer-controlled ending without an
+abrupt cut. The mode is Kit data, is included in Projects, pad Copy/Paste and
+host session state, and is exposed as a PHI/DAW parameter.
+
+Version 0.9.8 moves the per-pad `TRIGGER`/`GATED` control from Pad Settings to
+the Sequencer top bar beside PAD VOL, PAD PAN and PAD TUNE. Its button and
+`PAD MODE` label always use the selected pad's colour; changing the mode now
+changes only the button text.
+
+Version 0.9.9 renames the sixteen logical auxiliary outputs from `OUT 1–16` to
+`AUX 1–16` in both the VST3 bus names and the per-pad OUTPUT selector. MAIN and
+every routing index remain unchanged.
+
+Version 0.9.10 gives SNAP a distinct green active colour and draws a short
+border-coloured link between LOOP and NORMAL/PING-PONG to show that the loop
+mode belongs to the LOOP function. When one or more pads are soloed, every
+non-soloed pad now receives the same visual darkening as a muted pad. Their Mute
+indicators remain unchanged because those pads are only being silenced by the
+Solo state.
 
 ## Pattern buttons
 

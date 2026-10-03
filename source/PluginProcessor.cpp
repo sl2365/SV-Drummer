@@ -15,6 +15,109 @@ namespace
 {
 constexpr int waveformPointCount = 2048;
 
+float shapeAttackPhase (float phase, float curve) noexcept
+{
+    const float linear = juce::jlimit (0.0f, 1.0f, phase);
+    const float amount = juce::jlimit (-1.0f, 1.0f, curve);
+
+    if (amount < 0.0f)
+    {
+        const float exponent = std::pow (4.0f, -amount);
+        return 1.0f - std::pow (1.0f - linear, exponent);
+    }
+
+    return std::pow (linear, std::pow (4.0f, amount));
+}
+
+struct BiquadCoefficients
+{
+    float b0 = 1.0f;
+    float b1 = 0.0f;
+    float b2 = 0.0f;
+    float a1 = 0.0f;
+    float a2 = 0.0f;
+};
+
+BiquadCoefficients makeFilterCoefficients (
+    SVDrummerAudioProcessor::PadFilterType type,
+    float cutoffHz,
+    float resonance,
+    double sampleRate)
+{
+    BiquadCoefficients coefficients;
+
+    if (type == SVDrummerAudioProcessor::PadFilterType::off
+        || type == SVDrummerAudioProcessor::PadFilterType::comb
+        || type == SVDrummerAudioProcessor::PadFilterType::formant
+        || type == SVDrummerAudioProcessor::PadFilterType::ladder)
+        return coefficients;
+
+    const double safeSampleRate = juce::jmax (1.0, sampleRate);
+    const double cutoff = juce::jlimit (
+        20.0, safeSampleRate * 0.45, static_cast<double> (cutoffHz));
+    const double q = 0.5 + 11.5 * juce::jlimit (
+        0.0, 1.0, static_cast<double> (resonance));
+    const double omega = juce::MathConstants<double>::twoPi
+                       * cutoff / safeSampleRate;
+    const double sine = std::sin (omega);
+    const double cosine = std::cos (omega);
+    const double alpha = sine / (2.0 * q);
+    double b0 = 1.0;
+    double b1 = 0.0;
+    double b2 = 0.0;
+    const double a0 = 1.0 + alpha;
+    const double a1 = -2.0 * cosine;
+    const double a2 = 1.0 - alpha;
+
+    switch (type)
+    {
+        case SVDrummerAudioProcessor::PadFilterType::lowPass:
+            b0 = (1.0 - cosine) * 0.5;
+            b1 = 1.0 - cosine;
+            b2 = b0;
+            break;
+        case SVDrummerAudioProcessor::PadFilterType::bandPass:
+            b0 = alpha;
+            b1 = 0.0;
+            b2 = -alpha;
+            break;
+        case SVDrummerAudioProcessor::PadFilterType::highPass:
+            b0 = (1.0 + cosine) * 0.5;
+            b1 = -(1.0 + cosine);
+            b2 = b0;
+            break;
+        case SVDrummerAudioProcessor::PadFilterType::notch:
+            b0 = 1.0;
+            b1 = -2.0 * cosine;
+            b2 = 1.0;
+            break;
+        case SVDrummerAudioProcessor::PadFilterType::off:
+        case SVDrummerAudioProcessor::PadFilterType::comb:
+        case SVDrummerAudioProcessor::PadFilterType::formant:
+        case SVDrummerAudioProcessor::PadFilterType::ladder:
+        default:
+            break;
+    }
+
+    coefficients.b0 = static_cast<float> (b0 / a0);
+    coefficients.b1 = static_cast<float> (b1 / a0);
+    coefficients.b2 = static_cast<float> (b2 / a0);
+    coefficients.a1 = static_cast<float> (a1 / a0);
+    coefficients.a2 = static_cast<float> (a2 / a0);
+    return coefficients;
+}
+
+float processBiquadSample (float input,
+                            const BiquadCoefficients& coefficients,
+                            float& z1,
+                            float& z2) noexcept
+{
+    const float output = coefficients.b0 * input + z1;
+    z1 = coefficients.b1 * input - coefficients.a1 * output + z2;
+    z2 = coefficients.b2 * input - coefficients.a2 * output;
+    return output;
+}
+
 class StateBackedParameter final : public juce::RangedAudioParameter
 {
 public:
@@ -128,7 +231,7 @@ juce::String patternMidiModeToString (
         case SVDrummerAudioProcessor::PatternMidiMode::gate: return "Gate";
         case SVDrummerAudioProcessor::PatternMidiMode::hold: return "Hold";
         case SVDrummerAudioProcessor::PatternMidiMode::select:
-        default: return "Select";
+        default: return "Manual";
     }
 }
 
@@ -144,14 +247,47 @@ SVDrummerAudioProcessor::PatternMidiMode patternMidiModeFromString (
     return SVDrummerAudioProcessor::PatternMidiMode::select;
 }
 
+juce::String patternSyncModeToString (
+    SVDrummerAudioProcessor::PatternSyncMode mode)
+{
+    switch (mode)
+    {
+        case SVDrummerAudioProcessor::PatternSyncMode::bar:  return "Bar";
+        case SVDrummerAudioProcessor::PatternSyncMode::beat: return "Beat";
+        case SVDrummerAudioProcessor::PatternSyncMode::played:
+        default:                                              return "Played";
+    }
+}
+
+SVDrummerAudioProcessor::PatternSyncMode patternSyncModeFromString (
+    const juce::String& text)
+{
+    if (text.equalsIgnoreCase ("Bar"))
+        return SVDrummerAudioProcessor::PatternSyncMode::bar;
+
+    if (text.equalsIgnoreCase ("Beat"))
+        return SVDrummerAudioProcessor::PatternSyncMode::beat;
+
+    return SVDrummerAudioProcessor::PatternSyncMode::played;
+}
+
 #if JUCE_WINDOWS
 int moduleLocationAnchor = 0;
 #endif
 }
 
 SVDrummerAudioProcessor::SVDrummerAudioProcessor()
-    : AudioProcessor (BusesProperties()
-                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+    : AudioProcessor ([]
+      {
+          BusesProperties buses;
+          buses.addBus (false, "MAIN", juce::AudioChannelSet::stereo(), true);
+
+          for (int output = 1; output <= numberOfPadOutputBuses; ++output)
+              buses.addBus (false, "AUX " + juce::String (output),
+                            juce::AudioChannelSet::stereo(), false);
+
+          return buses;
+      }())
 {
     formatManager.registerBasicFormats();
 
@@ -166,7 +302,13 @@ SVDrummerAudioProcessor::SVDrummerAudioProcessor()
         storedPatterns[static_cast<std::size_t> (index)].name
             = "Pattern " + juce::String (index + 1).paddedLeft ('0', 2);
         patternMidiNotes[static_cast<std::size_t> (index)].store (-1);
+        patternPlaybackPatternBars[static_cast<std::size_t> (index)].store (0);
     }
+
+    for (auto& step : patternPlaybackSteps)
+        step.store (-1);
+
+    undoPatternPlaybackSteps.fill (-1);
 
     initialiseHostParameters();
 
@@ -244,6 +386,8 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
                 patternGateWaitingForSelection.store (false);
                 activePatternGateNote.store (-1);
                 pendingPatternGateStartNote.store (-1);
+                queuedSyncedPatternSelection.store (-1);
+                queuedSyncedPatternGateNote.store (-1);
                 sequencerEnabled.store (false);
                 patternGateRestartCounter.fetch_add (1);
                 markHostParameterStateChanged();
@@ -257,9 +401,101 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
                     case 1:  return juce::String ("GATE");
                     case 2:  return juce::String ("HOLD");
                     case 0:
-                    default: return juce::String ("SELECT");
+                    default: return juce::String ("MANUAL");
                 }
             }));
+
+    patternSyncModeParameter = addStateParameter (
+        std::make_unique<StateBackedParameter> (
+            juce::ParameterID { "pattern_sync_mode", 1 },
+            "Pattern Sync Mode",
+            juce::NormalisableRange<float> { 0.0f, 2.0f, 1.0f },
+            0.0f,
+            juce::String(),
+            [this] { return static_cast<float> (patternSyncMode.load()); },
+            [this] (float value)
+            {
+                const int next = juce::jlimit (0, 2, juce::roundToInt (value));
+
+                if (patternSyncMode.exchange (next) == next)
+                    return;
+
+                if (queuedSyncedPatternSelection.load() >= 0)
+                {
+                    if (next == static_cast<int> (PatternSyncMode::played))
+                    {
+                        dispatchQueuedPatternSelection();
+                    }
+                    else
+                    {
+                        queuedSyncedPatternBoundaryPpq.store (
+                            getNextPatternSyncBoundary (
+                                currentHostPpqPosition.load()));
+                    }
+                }
+
+                markHostParameterStateChanged();
+            },
+            3,
+            false,
+            [] (float value, int)
+            {
+                switch (juce::jlimit (0, 2, juce::roundToInt (value)))
+                {
+                    case 1:  return juce::String ("BAR");
+                    case 2:  return juce::String ("BEAT");
+                    case 0:
+                    default: return juce::String ("PLAYED");
+                }
+            }));
+
+    patternPlaybackChainEnabledParameter = addStateParameter (
+        std::make_unique<StateBackedParameter> (
+            juce::ParameterID { "pattern_chain_enabled", 1 },
+            "Pattern Chain Enabled",
+            juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+            1.0f,
+            juce::String(),
+            [this]
+            {
+                return patternPlaybackChainEnabled.load() ? 1.0f : 0.0f;
+            },
+            [this] (float value)
+            {
+                const bool next = value >= 0.5f;
+
+                if (patternPlaybackChainEnabled.exchange (next) != next)
+                {
+                    activePatternPlaybackStep.store (-1);
+                    patternTimelineResetCounter.fetch_add (1);
+                    markHostParameterStateChanged();
+                }
+            },
+            2,
+            true,
+            booleanText));
+
+    patternPlaybackLoopParameter = addStateParameter (
+        std::make_unique<StateBackedParameter> (
+            juce::ParameterID { "pattern_chain_loop", 1 },
+            "Pattern Chain Loop",
+            juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+            0.0f,
+            juce::String(),
+            [this]
+            {
+                return patternPlaybackLoopEnabled.load() ? 1.0f : 0.0f;
+            },
+            [this] (float value)
+            {
+                const bool next = value >= 0.5f;
+
+                if (patternPlaybackLoopEnabled.exchange (next) != next)
+                    markHostParameterStateChanged();
+            },
+            2,
+            true,
+            booleanText));
 
     patternBarsParameter = addStateParameter (
         std::make_unique<StateBackedParameter> (
@@ -287,6 +523,7 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
                         sequence.loopLength.load()));
                 }
 
+                refreshPatternPlaybackBars();
                 markHostParameterStateChanged();
             },
             maximumPatternBars,
@@ -400,6 +637,307 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
                 }));
     }
 
+    // Keep the original v0.7.12 parameters first and append the second
+    // automation stage so their established host order remains unchanged.
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+
+        padHostParameters[index].midiNote = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_midi_note", 1 },
+                namePrefix + "MIDI Note",
+                juce::NormalisableRange<float> { 0.0f, 127.0f, 1.0f },
+                static_cast<float> (36 + padIndex),
+                juce::String(),
+                [this, index] {
+                    return static_cast<float> (pads[index].midiNote.load());
+                },
+                [this, index] (float value)
+                {
+                    const int next = juce::jlimit (
+                        0, 127, juce::roundToInt (value));
+
+                    if (pads[index].midiNote.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                128,
+                false,
+                [] (float value, int)
+                {
+                    return juce::MidiMessage::getMidiNoteName (
+                        juce::jlimit (0, 127, juce::roundToInt (value)),
+                        true, true, 4);
+                }));
+
+        const auto addBooleanPadParameter = [&] (
+            juce::RangedAudioParameter*& destination,
+            const juce::String& idSuffix,
+            const juce::String& nameSuffix,
+            std::atomic<bool>& state)
+        {
+            auto* const statePointer = &state;
+            destination = addStateParameter (
+                std::make_unique<StateBackedParameter> (
+                    juce::ParameterID { idPrefix + idSuffix, 1 },
+                    namePrefix + nameSuffix,
+                    juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+                    0.0f,
+                    juce::String(),
+                    [statePointer] {
+                        return statePointer->load() ? 1.0f : 0.0f;
+                    },
+                    [this, statePointer] (float value)
+                    {
+                        const bool next = value >= 0.5f;
+
+                        if (statePointer->exchange (next) != next)
+                            markHostParameterStateChanged();
+                    },
+                    2,
+                    true,
+                    booleanText));
+        };
+
+        addBooleanPadParameter (padHostParameters[index].mute,
+                                "_mute", "Mute", pads[index].muted);
+        addBooleanPadParameter (padHostParameters[index].solo,
+                                "_solo", "Solo", pads[index].soloed);
+        addBooleanPadParameter (padHostParameters[index].reverse,
+                                "_reverse", "Reverse", pads[index].reversed);
+
+        padHostParameters[index].chokeGroup = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_choke_group", 1 },
+                namePrefix + "Choke Group",
+                juce::NormalisableRange<float> {
+                    0.0f, static_cast<float> (numberOfPads), 1.0f },
+                0.0f,
+                juce::String(),
+                [this, index] {
+                    return static_cast<float> (pads[index].chokeGroup.load());
+                },
+                [this, index] (float value)
+                {
+                    const int next = juce::jlimit (
+                        0, numberOfPads, juce::roundToInt (value));
+
+                    if (pads[index].chokeGroup.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                numberOfPads + 1,
+                false,
+                [] (float value, int)
+                {
+                    const int group = juce::roundToInt (value);
+                    return group <= 0 ? juce::String ("Off")
+                                      : juce::String (group);
+                }));
+
+        const auto envelopeTimeText = [] (float value, int)
+        {
+            if (value >= 1000.0f)
+                return juce::String (value / 1000.0f, 2) + " s";
+
+            return juce::String (juce::roundToInt (value)) + " ms";
+        };
+
+        padHostParameters[index].ampCurve = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_amp_curve", 1 },
+                namePrefix + "AMP Curve",
+                juce::NormalisableRange<float> { -1.0f, 1.0f, 0.01f },
+                0.0f,
+                juce::String(),
+                [this, index] { return pads[index].ampCurve.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (-1.0f, 1.0f, value);
+
+                    if (std::abs (pads[index].ampCurve.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                201,
+                false,
+                [] (float value, int)
+                {
+                    if (std::abs (value) < 0.005f)
+                        return juce::String ("0.00");
+
+                    return (value > 0.0f ? juce::String ("+")
+                                          : juce::String())
+                         + juce::String (value, 2);
+                }));
+
+        padHostParameters[index].ampAttack = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_amp_attack_ms", 1 },
+                namePrefix + "Attack",
+                juce::NormalisableRange<float> { 0.0f, 2000.0f, 1.0f },
+                0.0f,
+                "ms",
+                [this, index] { return pads[index].ampAttackMs.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 2000.0f, value);
+
+                    if (std::abs (pads[index].ampAttackMs.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                envelopeTimeText));
+
+        padHostParameters[index].ampDecay = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_amp_decay_ms", 1 },
+                namePrefix + "Decay",
+                juce::NormalisableRange<float> { 0.0f, 5000.0f, 1.0f },
+                0.0f,
+                "ms",
+                [this, index] { return pads[index].ampDecayMs.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 5000.0f, value);
+
+                    if (std::abs (pads[index].ampDecayMs.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                envelopeTimeText));
+
+        padHostParameters[index].ampSustain = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_amp_sustain", 1 },
+                namePrefix + "Sustain",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+                1.0f,
+                "%",
+                [this, index] { return pads[index].ampSustain.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 1.0f, value);
+
+                    if (std::abs (pads[index].ampSustain.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                101,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (juce::roundToInt (value * 100.0f))
+                         + "%";
+                }));
+
+        padHostParameters[index].ampRelease = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_amp_release_ms", 1 },
+                namePrefix + "Release",
+                juce::NormalisableRange<float> { 0.0f, 5000.0f, 1.0f },
+                0.0f,
+                "ms",
+                [this, index] { return pads[index].ampReleaseMs.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 5000.0f, value);
+
+                    if (std::abs (
+                            pads[index].ampReleaseMs.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                envelopeTimeText));
+
+        addBooleanPadParameter (padHostParameters[index].loopEnabled,
+                                "_loop", "Loop", pads[index].loopEnabled);
+    }
+
+    for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
+    {
+        const auto index = static_cast<std::size_t> (laneIndex);
+        const auto idPrefix = "lane_"
+                            + juce::String (laneIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Lane " + juce::String (laneIndex + 1) + " ";
+
+        laneHostParameters[index].division = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_division", 1 },
+                namePrefix + "Division",
+                juce::NormalisableRange<float> {
+                    0.0f, static_cast<float> (sequencerDivisionCount - 1), 1.0f },
+                4.0f,
+                juce::String(),
+                [this, index] {
+                    return static_cast<float> (
+                        sequenceLanes[index].division.load());
+                },
+                [this, index] (float value)
+                {
+                    const int next = juce::jlimit (
+                        0, sequencerDivisionCount - 1,
+                        juce::roundToInt (value));
+                    auto& lane = sequenceLanes[index];
+
+                    if (lane.division.exchange (next) == next)
+                        return;
+
+                    lane.loopLength.store (juce::jlimit (
+                        1,
+                        getLaneMaximumLoopLength (static_cast<int> (index)),
+                        lane.loopLength.load()));
+                    markHostParameterStateChanged();
+                },
+                sequencerDivisionCount,
+                false,
+                [] (float value, int)
+                {
+                    return SVDrummerAudioProcessor::getSequencerDivisionName (
+                        juce::roundToInt (value));
+                }));
+
+        laneHostParameters[index].loopLength = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_loop_length_steps", 1 },
+                namePrefix + "Loop Length",
+                juce::NormalisableRange<float> {
+                    1.0f, static_cast<float> (maximumStepsPerLane), 1.0f },
+                16.0f,
+                "Steps",
+                [this, index] {
+                    return static_cast<float> (
+                        sequenceLanes[index].loopLength.load());
+                },
+                [this, index] (float value)
+                {
+                    const int laneIndexValue = static_cast<int> (index);
+                    const int next = juce::jlimit (
+                        1,
+                        getLaneMaximumLoopLength (laneIndexValue),
+                        juce::roundToInt (value));
+
+                    if (sequenceLanes[index].loopLength.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                maximumStepsPerLane,
+                false,
+                [] (float value, int)
+                {
+                    const int steps = juce::roundToInt (value);
+                    return juce::String (steps)
+                         + (steps == 1 ? " Step" : " Steps");
+                }));
+    }
+
     stateRevisionParameter = addStateParameter (
         std::make_unique<StateBackedParameter> (
             juce::ParameterID { "internal_state_revision", 1 },
@@ -415,6 +953,687 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
             StateBackedParameter::Parser(),
             false,
             true));
+
+    const auto frequencyText = [] (float value, int)
+    {
+        if (value < 1.0f)
+            return juce::String ("Off");
+
+        if (value >= 1000.0f)
+            return juce::String (value / 1000.0f, value >= 10000.0f ? 1 : 2)
+                 + " kHz";
+
+        return juce::String (juce::roundToInt (value)) + " Hz";
+    };
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+
+        auto cutoffRange = juce::NormalisableRange<float> {
+            20.0f, 20000.0f, 1.0f };
+        cutoffRange.setSkewForCentre (1000.0f);
+        padHostParameters[index].filterCutoff = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_filter_cutoff_hz", 1 },
+                namePrefix + "Filter Cutoff",
+                cutoffRange,
+                20000.0f,
+                "Hz",
+                [this, index] { return pads[index].filterCutoffHz.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (20.0f, 20000.0f, value);
+
+                    if (std::abs (
+                            pads[index].filterCutoffHz.exchange (next) - next)
+                        > 0.01f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                frequencyText));
+
+        padHostParameters[index].filterResonance = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_filter_resonance", 1 },
+                namePrefix + "Filter Resonance",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+                0.0f,
+                "%",
+                [this, index] { return pads[index].filterResonance.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 1.0f, value);
+
+                    if (std::abs (
+                            pads[index].filterResonance.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                101,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (juce::roundToInt (value * 100.0f))
+                         + "%";
+                }));
+
+        padHostParameters[index].filterDrive = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_filter_drive_db", 1 },
+                namePrefix + "Filter Drive",
+                juce::NormalisableRange<float> { 0.0f, 24.0f, 0.1f },
+                0.0f,
+                "dB",
+                [this, index] { return pads[index].filterDriveDb.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 24.0f, value);
+
+                    if (std::abs (pads[index].filterDriveDb.exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (value, 1) + " dB";
+                }));
+
+        padHostParameters[index].filterType = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_filter_type", 1 },
+                namePrefix + "Filter Type",
+                juce::NormalisableRange<float> { 1.0f, 7.0f, 1.0f },
+                1.0f,
+                juce::String(),
+                [this, index] {
+                    return static_cast<float> (pads[index].filterType.load());
+                },
+                [this, index] (float value)
+                {
+                    const int next = juce::jlimit (
+                        1, 7, juce::roundToInt (value));
+
+                    if (pads[index].filterType.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                7,
+                false,
+                [] (float value, int)
+                {
+                    return SVDrummerAudioProcessor::getPadFilterTypeName (
+                        static_cast<SVDrummerAudioProcessor::PadFilterType> (
+                            juce::jlimit (1, 7, juce::roundToInt (value))));
+                }));
+
+        padHostParameters[index].filterSlope = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_filter_slope", 1 },
+                namePrefix + "Filter Slope",
+                juce::NormalisableRange<float> { 0.0f, 3.0f, 1.0f },
+                1.0f,
+                juce::String(),
+                [this, index] {
+                    return static_cast<float> (pads[index].filterSlope.load());
+                },
+                [this, index] (float value)
+                {
+                    const int next = juce::jlimit (
+                        0, 3, juce::roundToInt (value));
+
+                    if (pads[index].filterSlope.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                4,
+                false,
+                [] (float value, int)
+                {
+                    return SVDrummerAudioProcessor::getPadFilterSlopeName (
+                        juce::roundToInt (value));
+                }));
+
+        auto highPassRange = juce::NormalisableRange<float> {
+            0.0f, 2000.0f, 1.0f };
+        highPassRange.setSkewForCentre (180.0f);
+        padHostParameters[index].highPassCutoff = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_high_pass_cutoff_hz", 1 },
+                namePrefix + "High-Pass Cutoff",
+                highPassRange,
+                0.0f,
+                "Hz",
+                [this, index] { return pads[index].highPassCutoffHz.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 2000.0f, value);
+
+                    if (std::abs (
+                            pads[index].highPassCutoffHz.exchange (next) - next)
+                        > 0.01f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                frequencyText));
+    }
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+
+        padHostParameters[index].compressorEnabled = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_compressor_enabled", 1 },
+                namePrefix + "Compressor",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+                0.0f,
+                juce::String(),
+                [this, index] {
+                    return pads[index].compressorEnabled.load() ? 1.0f : 0.0f;
+                },
+                [this, index] (float value)
+                {
+                    const bool next = value >= 0.5f;
+
+                    if (pads[index].compressorEnabled.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                2,
+                true,
+                booleanText));
+
+        padHostParameters[index].compressorThreshold = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_compressor_threshold_db", 1 },
+                namePrefix + "Compressor Threshold",
+                juce::NormalisableRange<float> { -60.0f, 0.0f, 0.1f },
+                -18.0f,
+                "dB",
+                [this, index] {
+                    return pads[index].compressorThresholdDb.load();
+                },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (-60.0f, 0.0f, value);
+
+                    if (std::abs (
+                            pads[index].compressorThresholdDb.exchange (next)
+                            - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (value, 1) + " dB";
+                }));
+
+        auto ratioRange = juce::NormalisableRange<float> {
+            1.0f, 20.0f, 0.1f };
+        ratioRange.setSkewForCentre (4.0f);
+        padHostParameters[index].compressorRatio = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_compressor_ratio", 1 },
+                namePrefix + "Compressor Ratio",
+                ratioRange,
+                4.0f,
+                ":1",
+                [this, index] { return pads[index].compressorRatio.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (1.0f, 20.0f, value);
+
+                    if (std::abs (pads[index].compressorRatio.exchange (next)
+                                  - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (value, 1) + ":1";
+                }));
+
+        auto attackRange = juce::NormalisableRange<float> {
+            0.1f, 100.0f, 0.1f };
+        attackRange.setSkewForCentre (10.0f);
+        padHostParameters[index].compressorAttack = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_compressor_attack_ms", 1 },
+                namePrefix + "Compressor Attack",
+                attackRange,
+                10.0f,
+                "ms",
+                [this, index] {
+                    return pads[index].compressorAttackMs.load();
+                },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.1f, 100.0f, value);
+
+                    if (std::abs (pads[index].compressorAttackMs.exchange (next)
+                                  - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (value, value < 10.0f ? 1 : 0) + " ms";
+                }));
+
+        auto releaseRange = juce::NormalisableRange<float> {
+            10.0f, 1000.0f, 1.0f };
+        releaseRange.setSkewForCentre (100.0f);
+        padHostParameters[index].compressorRelease = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_compressor_release_ms", 1 },
+                namePrefix + "Compressor Release",
+                releaseRange,
+                100.0f,
+                "ms",
+                [this, index] {
+                    return pads[index].compressorReleaseMs.load();
+                },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (10.0f, 1000.0f, value);
+
+                    if (std::abs (pads[index].compressorReleaseMs.exchange (next)
+                                  - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (juce::roundToInt (value)) + " ms";
+                }));
+
+        padHostParameters[index].compressorKnee = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_compressor_knee_db", 1 },
+                namePrefix + "Compressor Knee",
+                juce::NormalisableRange<float> { 0.0f, 24.0f, 0.1f },
+                6.0f,
+                "dB",
+                [this, index] { return pads[index].compressorKneeDb.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 24.0f, value);
+
+                    if (std::abs (pads[index].compressorKneeDb.exchange (next)
+                                  - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (value, 1) + " dB";
+                }));
+    }
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+
+        padHostParameters[index].saturationAmount = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_saturation_amount", 1 },
+                namePrefix + "Saturation",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+                0.0f,
+                "%",
+                [this, index] { return pads[index].saturationAmount.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 1.0f, value);
+
+                    if (std::abs (pads[index].saturationAmount.exchange (next)
+                                  - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                101,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (juce::roundToInt (value * 100.0f))
+                         + "%";
+                }));
+
+        padHostParameters[index].saturationHardClip = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_saturation_hard_clip", 1 },
+                namePrefix + "Saturation Hard Clip",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+                0.0f,
+                "%",
+                [this, index] {
+                    return pads[index].saturationHardClipAmount.load();
+                },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (0.0f, 1.0f, value);
+
+                    if (std::abs (
+                            pads[index].saturationHardClipAmount.exchange (next)
+                            - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                101,
+                false,
+                [] (float value, int)
+                {
+                    return juce::String (juce::roundToInt (value * 100.0f))
+                         + "%";
+                }));
+    }
+
+    // Append the new section-bypass parameters after every existing pad and
+    // lane parameter so established host parameter indices remain stable.
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+
+        const auto addSectionEnable = [&] (
+            juce::RangedAudioParameter*& destination,
+            const juce::String& idSuffix,
+            const juce::String& nameSuffix,
+            std::atomic<bool>& state)
+        {
+            auto* const statePointer = &state;
+            destination = addStateParameter (
+                std::make_unique<StateBackedParameter> (
+                    juce::ParameterID { idPrefix + idSuffix, 1 },
+                    namePrefix + nameSuffix,
+                    juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+                    0.0f,
+                    juce::String(),
+                    [statePointer] {
+                        return statePointer->load() ? 1.0f : 0.0f;
+                    },
+                    [this, statePointer] (float value)
+                    {
+                        const bool next = value >= 0.5f;
+
+                        if (statePointer->exchange (next) != next)
+                            markHostParameterStateChanged();
+                    },
+                    2,
+                    true,
+                    booleanText));
+        };
+
+        addSectionEnable (padHostParameters[index].filterEnabled,
+                          "_filter_enabled", "Filter",
+                          pads[index].filterEnabled);
+        addSectionEnable (padHostParameters[index].saturationEnabled,
+                          "_saturation_enabled", "Saturation",
+                          pads[index].saturationEnabled);
+    }
+
+    const auto addGlobalBoolean = [&] (
+        juce::RangedAudioParameter*& destination,
+        const juce::String& id,
+        const juce::String& name,
+        std::atomic<bool>& state)
+    {
+        auto* const statePointer = &state;
+        destination = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { id, 1 }, name,
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+                0.0f, juce::String(),
+                [statePointer] {
+                    return statePointer->load() ? 1.0f : 0.0f;
+                },
+                [this, statePointer] (float value)
+                {
+                    const bool next = value >= 0.5f;
+
+                    if (statePointer->exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                2, true, booleanText));
+    };
+
+    const auto addGlobalFloat = [&] (
+        juce::RangedAudioParameter*& destination,
+        const juce::String& id,
+        const juce::String& name,
+        juce::NormalisableRange<float> range,
+        float defaultValue,
+        const juce::String& suffix,
+        std::atomic<float>& state,
+        StateBackedParameter::Formatter formatter)
+    {
+        auto* const statePointer = &state;
+        destination = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { id, 1 }, name, range, defaultValue,
+                suffix,
+                [statePointer] { return statePointer->load(); },
+                [this, statePointer, range] (float value)
+                {
+                    const float next = range.snapToLegalValue (
+                        juce::jlimit (range.start, range.end, value));
+
+                    if (std::abs (statePointer->exchange (next) - next)
+                        > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0, false, std::move (formatter)));
+    };
+
+    addGlobalBoolean (globalDelayEnabledParameter,
+                      "global_delay_enabled", "Global Delay",
+                      globalDelayEnabled);
+    addGlobalFloat (
+        globalDelayTimeParameter, "global_delay_time_ms", "Global Delay Time",
+        juce::NormalisableRange<float> { 1.0f, 2000.0f, 1.0f },
+        250.0f, "ms", globalDelayTimeMs,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value)) + " ms";
+        });
+    addGlobalFloat (
+        globalDelayFeedbackParameter, "global_delay_feedback",
+        "Global Delay Feedback",
+        juce::NormalisableRange<float> { 0.0f, 0.95f, 0.01f },
+        0.35f, "%", globalDelayFeedback,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+    addGlobalFloat (
+        globalDelayMixParameter, "global_delay_mix", "Global Delay Mix",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+        0.25f, "%", globalDelayMix,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+    addGlobalBoolean (globalReverbEnabledParameter,
+                      "global_reverb_enabled", "Global Reverb",
+                      globalReverbEnabled);
+    addGlobalFloat (
+        globalReverbSizeParameter, "global_reverb_size", "Global Reverb Size",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+        0.50f, "%", globalReverbSize,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+    addGlobalFloat (
+        globalReverbDampingParameter, "global_reverb_damping",
+        "Global Reverb Damping",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+        0.50f, "%", globalReverbDamping,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+    addGlobalFloat (
+        globalReverbWidthParameter, "global_reverb_width", "Global Reverb Width",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+        1.0f, "%", globalReverbWidth,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+    addGlobalFloat (
+        globalReverbMixParameter, "global_reverb_mix", "Global Reverb Mix",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+        0.20f, "%", globalReverbMix,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+
+    // Appended after the v0.8.2 global FX parameters so their host indices
+    // stay stable.
+    addGlobalBoolean (globalDelaySyncEnabledParameter,
+                      "global_delay_sync_enabled", "Global Delay Sync",
+                      globalDelaySyncEnabled);
+    globalDelaySyncDivisionParameter = addStateParameter (
+        std::make_unique<StateBackedParameter> (
+            juce::ParameterID { "global_delay_sync_division", 1 },
+            "Global Delay Sync Division",
+            juce::NormalisableRange<float> { 0.0f, 11.0f, 1.0f },
+            5.0f, juce::String(),
+            [this] {
+                return static_cast<float> (globalDelaySyncDivision.load());
+            },
+            [this] (float value)
+            {
+                const int next = juce::jlimit (
+                    0, 11, juce::roundToInt (value));
+
+                if (globalDelaySyncDivision.exchange (next) != next)
+                    markHostParameterStateChanged();
+            },
+            12, false,
+            [] (float value, int)
+            {
+                return SVDrummerAudioProcessor::getDelaySyncDivisionName (
+                    juce::roundToInt (value));
+            }));
+
+    // New parameters are appended so the indices of the existing PHI/DAW
+    // mappings remain unchanged.
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+        padHostParameters[index].loopMode = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_loop_mode", 1 },
+                namePrefix + "Loop Mode",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+                0.0f,
+                juce::String(),
+                [this, index] {
+                    return static_cast<float> (pads[index].loopMode.load());
+                },
+                [this, index] (float value)
+                {
+                    const int next = juce::jlimit (
+                        0, 1, juce::roundToInt (value));
+
+                    if (pads[index].loopMode.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                2,
+                false,
+                [] (float value, int)
+                {
+                    return SVDrummerAudioProcessor::getPadLoopModeName (
+                        static_cast<SVDrummerAudioProcessor::PadLoopMode> (
+                            juce::jlimit (0, 1, juce::roundToInt (value))));
+                }));
+    }
+
+    // Output routing was added in v0.9.0. Keep it at the end so every existing
+    // PHI/DAW parameter index remains unchanged.
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+        padHostParameters[index].outputBus = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_output_bus", 1 },
+                namePrefix + "Output",
+                juce::NormalisableRange<float> {
+                    0.0f, static_cast<float> (numberOfPadOutputBuses), 1.0f },
+                0.0f,
+                juce::String(),
+                [this, index] {
+                    return static_cast<float> (pads[index].outputBus.load());
+                },
+                [this, index] (float value)
+                {
+                    const int next = juce::jlimit (
+                        0, numberOfPadOutputBuses,
+                        juce::roundToInt (value));
+
+                    if (pads[index].outputBus.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                numberOfOutputBuses,
+                false,
+                [] (float value, int)
+                {
+                    return SVDrummerAudioProcessor::getPadOutputBusName (
+                        juce::roundToInt (value));
+                }));
+    }
+
+    // Per-pad sequencer playback mode was added in v0.9.7. Append it so the
+    // indices of all existing PHI/DAW parameters remain unchanged.
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        const auto index = static_cast<std::size_t> (padIndex);
+        const auto idPrefix = "pad_"
+                            + juce::String (padIndex + 1).paddedLeft ('0', 2);
+        const auto namePrefix = "Pad " + juce::String (padIndex + 1) + " ";
+        padHostParameters[index].sequencerGated = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_sequencer_gated", 1 },
+                namePrefix + "Sequencer Playback",
+                juce::NormalisableRange<float> { 0.0f, 1.0f, 1.0f },
+                0.0f,
+                juce::String(),
+                [this, index] {
+                    return pads[index].sequencerGated.load() ? 1.0f : 0.0f;
+                },
+                [this, index] (float value)
+                {
+                    const bool next = value >= 0.5f;
+
+                    if (pads[index].sequencerGated.exchange (next) != next)
+                        markHostParameterStateChanged();
+                },
+                2,
+                false,
+                [] (float value, int)
+                {
+                    return value >= 0.5f ? juce::String ("Gated")
+                                         : juce::String ("Trigger");
+                }));
+    }
 }
 
 const juce::String SVDrummerAudioProcessor::getName() const
@@ -433,15 +1652,23 @@ void SVDrummerAudioProcessor::setCurrentProgram (int)         {}
 const juce::String SVDrummerAudioProcessor::getProgramName (int) { return {}; }
 void SVDrummerAudioProcessor::changeProgramName (int, const juce::String&) {}
 
-void SVDrummerAudioProcessor::prepareToPlay (double sampleRate, int)
+void SVDrummerAudioProcessor::prepareToPlay (double sampleRate,
+                                              int maximumBlockSize)
 {
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
-    lastPatternChangeCounter = patternChangeCounter.load();
+    preparePadFilterDsp (maximumBlockSize);
+    prepareGlobalEffects();
+    lastPatternTimelineResetCounter = patternTimelineResetCounter.load();
+    lastPatternPlaybackSwitchCounter = patternPlaybackSwitchCounter.load();
     lastPatternGateRestartCounter = patternGateRestartCounter.load();
     patternGateActive.store (false);
     patternGateWaitingForSelection.store (false);
     activePatternGateNote.store (-1);
     pendingPatternGateStartNote.store (-1);
+    queuedSyncedPatternSelection.store (-1);
+    queuedSyncedPatternGateNote.store (-1);
+    currentHostTransportPlaying.store (false);
+    currentHostPpqAvailable.store (false);
 
     if (getPatternMidiMode() != PatternMidiMode::select)
         sequencerEnabled.store (false);
@@ -462,9 +1689,26 @@ void SVDrummerAudioProcessor::releaseResources()
 
 bool SVDrummerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    const auto output = layouts.getMainOutputChannelSet();
-    return output == juce::AudioChannelSet::mono()
-        || output == juce::AudioChannelSet::stereo();
+    if (! layouts.inputBuses.isEmpty()
+        || layouts.outputBuses.size() != numberOfOutputBuses
+        || layouts.getMainOutputChannelSet()
+             != juce::AudioChannelSet::stereo())
+    {
+        return false;
+    }
+
+    for (int busIndex = 1; busIndex < numberOfOutputBuses; ++busIndex)
+    {
+        const auto layout = layouts.getChannelSet (false, busIndex);
+
+        if (! layout.isDisabled()
+            && layout != juce::AudioChannelSet::stereo())
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
@@ -472,6 +1716,45 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
+    auto mainOutput = getBusBuffer (buffer, false, 0);
+
+    bool blockHostPlaying = false;
+    bool blockHostPpqAvailable = false;
+    const bool previousHostPpqAvailable = currentHostPpqAvailable.load();
+    const double previousHostPpq = currentHostPpqPosition.load();
+    double blockStartPpq = previousHostPpq;
+    double blockBpm = currentHostTempoBpm.load();
+
+    if (auto* currentPlayHead = getPlayHead())
+        if (const auto position = currentPlayHead->getPosition())
+        {
+            blockHostPlaying = position->getIsPlaying();
+
+            if (const auto bpm = position->getBpm())
+                blockBpm = juce::jmax (1.0, *bpm);
+
+            if (const auto ppq = position->getPpqPosition())
+            {
+                blockStartPpq = *ppq;
+                blockHostPpqAvailable = true;
+            }
+        }
+
+    if (queuedSyncedPatternSelection.load() >= 0
+        && blockHostPlaying
+        && blockHostPpqAvailable
+        && previousHostPpqAvailable
+        && blockStartPpq + 1.0e-6 < previousHostPpq)
+    {
+        queuedSyncedPatternBoundaryPpq.store (
+            getNextPatternSyncBoundary (blockStartPpq));
+    }
+
+    currentHostTempoBpm.store (blockBpm);
+    currentHostPpqPosition.store (blockStartPpq);
+    currentHostTransportPlaying.store (blockHostPlaying);
+    currentHostPpqAvailable.store (blockHostPpqAvailable);
+    serviceQueuedPatternSelection (blockStartPpq);
 
     for (const auto metadata : midiMessages)
     {
@@ -503,19 +1786,58 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     }
                     else
                     {
-                        pendingPatternSelection.store (patternIndex);
+                        const bool quantiseSelection =
+                            getPatternSyncMode() != PatternSyncMode::played
+                            && blockHostPlaying
+                            && blockHostPpqAvailable;
+                        const bool preserveCurrentPatternUntilBoundary =
+                            quantiseSelection
+                            && midiMode != PatternMidiMode::select
+                            && sequencerEnabled.load()
+                            && patternGateActive.load()
+                            && ! patternGateWaitingForSelection.load();
 
-                        if (midiMode != PatternMidiMode::select)
+                        if (midiMode != PatternMidiMode::select
+                            && ! preserveCurrentPatternUntilBoundary)
                         {
                             activePatternGateNote.store (note);
-                            pendingPatternGateStartNote.store (note);
                             patternGateActive.store (false);
                             patternGateWaitingForSelection.store (true);
                             sequencerEnabled.store (true);
                         }
 
-                        triggerAsyncUpdate();
+                        if (quantiseSelection)
+                        {
+                            const double quarterNotesPerSample =
+                                blockBpm
+                                / (60.0 * juce::jmax (
+                                      1.0, currentSampleRate));
+                            const double eventPpq = blockStartPpq
+                                + static_cast<double> (
+                                      juce::jmax (0, metadata.samplePosition))
+                                      * quarterNotesPerSample;
+                            queueSyncedPatternSelection (
+                                patternIndex,
+                                midiMode == PatternMidiMode::select ? -1
+                                                                    : note,
+                                eventPpq);
+                        }
+                        else
+                        {
+                            pendingPatternSelection.store (patternIndex);
+
+                            if (midiMode != PatternMidiMode::select)
+                                pendingPatternGateStartNote.store (note);
+
+                            triggerAsyncUpdate();
+                        }
                     }
+                }
+                else if (midiMode == PatternMidiMode::gate
+                         && queuedSyncedPatternGateNote.load() == note)
+                {
+                    queuedSyncedPatternSelection.store (-1);
+                    queuedSyncedPatternGateNote.store (-1);
                 }
                 else if (midiMode == PatternMidiMode::gate
                          && activePatternGateNote.load() == note)
@@ -575,7 +1897,20 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             triggerPadOnAudioThread (
                 padIndex,
                 pendingInterfaceVelocities[static_cast<std::size_t> (padIndex)].load(),
-                0);
+                0, false, true);
+
+    const auto pendingReleases = pendingInterfaceReleases.exchange (0);
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        if ((pendingReleases
+             & (std::uint32_t { 1 } << static_cast<unsigned int> (padIndex))) == 0)
+            continue;
+
+        for (auto& voice : pads[static_cast<std::size_t> (padIndex)].voices)
+            if (voice.active && voice.looping && voice.interfaceTriggered)
+                voice.releaseAtOutputSample = 0;
+    }
 
     processSequencerTriggers (buffer.getNumSamples());
 
@@ -587,13 +1922,62 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const bool outputEnabled = ! pad.muted.load()
                                 && (! hasSolo || pad.soloed.load());
 
-        renderPadVoices (padIndex, buffer, outputEnabled);
+        padRenderBuffer.setSize (2, buffer.getNumSamples(),
+                                 false, false, true);
+        padRenderBuffer.clear();
+        renderPadVoices (padIndex, padRenderBuffer, outputEnabled);
+
+        auto& filterState = padFilterDspStates[
+            static_cast<std::size_t> (padIndex)];
+
+        if (! outputEnabled)
+        {
+            if (filterState.outputWasEnabled)
+            {
+                resetPadFilterDspState (padIndex);
+                resetPadCompressorDspState (padIndex);
+            }
+
+            filterState.wetMix = 0.0f;
+            filterState.wasEnabled = false;
+            padSaturationDspStates[static_cast<std::size_t> (padIndex)] = {};
+            filterState.outputWasEnabled = false;
+            continue;
+        }
+
+        if (! filterState.outputWasEnabled)
+        {
+            resetPadFilterDspState (padIndex);
+            resetPadCompressorDspState (padIndex);
+            filterState.wetMix = 0.0f;
+            filterState.wasEnabled = false;
+            padSaturationDspStates[static_cast<std::size_t> (padIndex)] = {};
+        }
+
+        filterState.outputWasEnabled = true;
+        processPadFilter (padIndex, padRenderBuffer);
+        processPadCompressor (padIndex, padRenderBuffer);
+        processPadSaturation (padIndex, padRenderBuffer);
+
+        const int outputBus = juce::jlimit (
+            0, numberOfPadOutputBuses, pad.outputBus.load());
+        auto destination = getBusBuffer (buffer, false, outputBus);
+        const int channelsToCopy = juce::jmin (
+            destination.getNumChannels(), padRenderBuffer.getNumChannels());
+
+        for (int channel = 0; channel < channelsToCopy; ++channel)
+            destination.addFrom (channel, 0, padRenderBuffer, channel, 0,
+                                 buffer.getNumSamples());
     }
+
+    // Global effects belong to MAIN. Individually routed pad outputs remain
+    // dry for processing and mixing in the host.
+    processGlobalEffects (mainOutput);
 
     if (browserPreviewTriggerPending.exchange (false))
         triggerBrowserPreviewOnAudioThread();
 
-    renderBrowserPreview (buffer);
+    renderBrowserPreview (mainOutput);
 }
 
 void SVDrummerAudioProcessor::triggerBrowserPreviewOnAudioThread()
@@ -674,7 +2058,8 @@ void SVDrummerAudioProcessor::renderBrowserPreview (juce::AudioBuffer<float>& ou
 void SVDrummerAudioProcessor::triggerPadOnAudioThread (int padIndex,
                                                         float velocity,
                                                         int delaySamples,
-                                                        bool triggeredBySequencer)
+                                                        bool triggeredBySequencer,
+                                                        bool triggeredByInterface)
 {
     if (! isValidPadIndex (padIndex))
         return;
@@ -686,6 +2071,8 @@ void SVDrummerAudioProcessor::triggerPadOnAudioThread (int padIndex,
         return;
 
     const bool looping = pad.loopEnabled.load();
+    const bool gatedSequencerTrigger = triggeredBySequencer
+                                    && pad.sequencerGated.load();
     const int chokeGroup = pad.chokeGroup.load();
 
     if (chokeGroup > 0)
@@ -708,7 +2095,7 @@ void SVDrummerAudioProcessor::triggerPadOnAudioThread (int padIndex,
             }
         }
     }
-    else if (looping)
+    else if (looping && ! gatedSequencerTrigger)
     {
         for (auto& existingVoice : pad.voices)
         {
@@ -766,9 +2153,13 @@ void SVDrummerAudioProcessor::triggerPadOnAudioThread (int padIndex,
     voice.loopStart = static_cast<double> (loopStart);
     voice.loopEnd = static_cast<double> (loopEnd);
     voice.looping = looping && loopEnd > loopStart;
+    voice.pingPongLoop = voice.looping
+                      && getPadLoopMode (padIndex) == PadLoopMode::pingPong;
     voice.position = reversed ? voice.rangeEnd - 1.0 : voice.rangeStart;
     voice.sampleRevision = pad.sampleRevision.load();
+    voice.interfaceTriggered = triggeredByInterface;
     voice.sequencerTriggered = triggeredBySequencer;
+    voice.sequencerGated = gatedSequencerTrigger;
     startVoiceEnvelope (voice, pad);
     voice.active = true;
 
@@ -791,6 +2182,8 @@ void SVDrummerAudioProcessor::startVoiceEnvelope (Voice& voice,
         juce::jlimit (0.0f, 5000.0f, pad.ampDecayMs.load()));
     voice.envelopeReleaseSamples = millisecondsToSamples (
         juce::jlimit (0.0f, 5000.0f, pad.ampReleaseMs.load()));
+    voice.envelopeAttackCurve = juce::jlimit (
+        -1.0f, 1.0f, pad.ampCurve.load());
     voice.envelopeSustain = juce::jlimit (
         0.0f, 1.0f, pad.ampSustain.load());
     voice.envelopeDelta = 0.0f;
@@ -879,15 +2272,35 @@ void SVDrummerAudioProcessor::advanceVoiceEnvelope (Voice& voice)
     }
 }
 
-void SVDrummerAudioProcessor::stopSequencerLoopVoicesOnAudioThread()
+void SVDrummerAudioProcessor::releaseSequencerVoicesOnAudioThread()
 {
     for (auto& pad : pads)
     {
         for (auto& voice : pad.voices)
         {
-            if (voice.active && voice.looping && voice.sequencerTriggered)
+            if (voice.active && voice.sequencerTriggered
+                && (voice.looping || voice.sequencerGated))
                 beginVoiceRelease (voice);
         }
+    }
+}
+
+void SVDrummerAudioProcessor::schedulePadSequencerGateRelease (
+    int padIndex, int outputSample)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    for (auto& voice : pads[static_cast<std::size_t> (padIndex)].voices)
+    {
+        if (! voice.active || ! voice.sequencerTriggered)
+            continue;
+
+        if (voice.releaseAtOutputSample < 0)
+            voice.releaseAtOutputSample = outputSample;
+        else
+            voice.releaseAtOutputSample = juce::jmin (
+                voice.releaseAtOutputSample, outputSample);
     }
 }
 
@@ -947,8 +2360,39 @@ void SVDrummerAudioProcessor::renderPadVoices (int padIndex,
             {
                 const double loopLength = voice.loopEnd - voice.loopStart;
 
-                if (loopLength > 0.0 && voice.increment >= 0.0
-                    && voice.position >= voice.loopEnd)
+                if (loopLength > 0.0 && voice.pingPongLoop
+                    && ((voice.increment >= 0.0
+                         && voice.position >= voice.loopEnd)
+                        || (voice.increment < 0.0
+                            && voice.position < voice.loopStart)))
+                {
+                    const double period = loopLength * 2.0;
+                    const double originalIncrement = voice.increment;
+                    double phase = std::fmod (
+                        voice.position - voice.loopStart, period);
+
+                    if (phase < 0.0)
+                        phase += period;
+
+                    if (phase < loopLength)
+                    {
+                        voice.position = voice.loopStart + phase;
+                        voice.increment = originalIncrement;
+                    }
+                    else
+                    {
+                        voice.position = voice.loopStart
+                                       + (period - phase);
+                        voice.increment = -originalIncrement;
+                    }
+
+                    voice.position = juce::jlimit (
+                        voice.loopStart,
+                        voice.loopEnd - 1.0e-9,
+                        voice.position);
+                }
+                else if (loopLength > 0.0 && voice.increment >= 0.0
+                         && voice.position >= voice.loopEnd)
                 {
                     voice.position = voice.loopStart
                                    + std::fmod (voice.position - voice.loopStart,
@@ -978,8 +2422,16 @@ void SVDrummerAudioProcessor::renderPadVoices (int padIndex,
                 static_cast<int> (voice.rangeEnd) - 1, firstIndex + 1);
             const float fraction = static_cast<float> (voice.position
                                                        - static_cast<double> (firstIndex));
-            const float voiceGain = gain * voice.velocity
-                                  * juce::jmax (0.0f, voice.envelopeLevel);
+            float shapedEnvelope = juce::jmax (0.0f, voice.envelopeLevel);
+
+            if (voice.envelopeStage == EnvelopeStage::attack
+                && std::abs (voice.envelopeAttackCurve) > 0.0001f)
+            {
+                shapedEnvelope = shapeAttackPhase (
+                    shapedEnvelope, voice.envelopeAttackCurve);
+            }
+
+            const float voiceGain = gain * voice.velocity * shapedEnvelope;
 
             if (outputEnabled && outputChannels > 0)
             {
@@ -1009,6 +2461,725 @@ void SVDrummerAudioProcessor::renderPadVoices (int padIndex,
             if (! voice.active)
                 break;
         }
+    }
+}
+
+void SVDrummerAudioProcessor::preparePadFilterDsp (int maximumBlockSize)
+{
+    padRenderBuffer.setSize (2, juce::jmax (1, maximumBlockSize),
+                             false, true);
+
+    const int maximumCombDelay = juce::jmax (
+        2, juce::roundToInt (currentSampleRate / 20.0) + 2);
+
+    for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+    {
+        auto& state = padFilterDspStates[static_cast<std::size_t> (padIndex)];
+
+        for (auto& delay : state.combDelay)
+            delay.assign (static_cast<std::size_t> (maximumCombDelay), 0.0f);
+
+        state.wetMix = 0.0f;
+        state.wasEnabled = false;
+        state.outputWasEnabled = false;
+        resetPadFilterDspState (padIndex);
+        resetPadCompressorDspState (padIndex);
+        padSaturationDspStates[static_cast<std::size_t> (padIndex)] = {};
+    }
+}
+
+void SVDrummerAudioProcessor::resetPadFilterDspState (int padIndex)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    auto& state = padFilterDspStates[static_cast<std::size_t> (padIndex)];
+    for (auto& channel : state.mainZ1)
+        channel.fill (0.0f);
+    for (auto& channel : state.mainZ2)
+        channel.fill (0.0f);
+    state.mainOnePole.fill (0.0f);
+    for (auto& channel : state.formantAZ1)
+        channel.fill (0.0f);
+    for (auto& channel : state.formantAZ2)
+        channel.fill (0.0f);
+    for (auto& channel : state.formantBZ1)
+        channel.fill (0.0f);
+    for (auto& channel : state.formantBZ2)
+        channel.fill (0.0f);
+    for (auto& channel : state.ladderStages)
+        channel.fill (0.0f);
+    state.highPassZ1.fill (0.0f);
+    state.highPassZ2.fill (0.0f);
+
+    for (auto& delay : state.combDelay)
+        std::fill (delay.begin(), delay.end(), 0.0f);
+
+    state.combWritePosition = 0;
+    state.lastFilterType = -1;
+}
+
+void SVDrummerAudioProcessor::processPadFilter (
+    int padIndex, juce::AudioBuffer<float>& buffer)
+{
+    if (! isValidPadIndex (padIndex)
+        || buffer.getNumChannels() <= 0 || buffer.getNumSamples() <= 0)
+        return;
+
+    const auto& pad = pads[static_cast<std::size_t> (padIndex)];
+    auto& state = padFilterDspStates[static_cast<std::size_t> (padIndex)];
+    const auto type = static_cast<PadFilterType> (juce::jlimit (
+        1, 7, pad.filterType.load()));
+    const int typeValue = static_cast<int> (type);
+    const int slopeIndex = juce::jlimit (0, 3, pad.filterSlope.load());
+    const bool mainFilterEnabled = pad.filterEnabled.load();
+    const float targetWetMix = mainFilterEnabled ? 1.0f : 0.0f;
+
+    if (! mainFilterEnabled && state.wetMix <= 0.0f)
+    {
+        if (state.wasEnabled)
+            resetPadFilterDspState (padIndex);
+
+        state.wasEnabled = false;
+        return;
+    }
+
+    if (mainFilterEnabled && ! state.wasEnabled)
+    {
+        resetPadFilterDspState (padIndex);
+        state.wasEnabled = true;
+    }
+
+    const int activeTypeValue = typeValue * 10 + slopeIndex;
+
+    if (state.lastFilterType != activeTypeValue)
+    {
+        resetPadFilterDspState (padIndex);
+        state.lastFilterType = activeTypeValue;
+    }
+
+    const float cutoff = juce::jlimit (
+        20.0f, 20000.0f, pad.filterCutoffHz.load());
+    const float resonance = juce::jlimit (
+        0.0f, 1.0f, pad.filterResonance.load());
+    const float driveDb = juce::jlimit (
+        0.0f, 24.0f, pad.filterDriveDb.load());
+    const float highPassCutoff = juce::jlimit (
+        0.0f, 2000.0f, pad.highPassCutoffHz.load());
+    static constexpr std::array<int, 4> cascadedBiquadStages { 1, 1, 2, 4 };
+    static constexpr std::array<int, 4> ladderPoleCounts { 1, 2, 4, 8 };
+    const int biquadStages = cascadedBiquadStages[
+        static_cast<std::size_t> (slopeIndex)];
+    const int ladderPoles = ladderPoleCounts[
+        static_cast<std::size_t> (slopeIndex)];
+    const float stageResonance = resonance
+        / std::sqrt (static_cast<float> (juce::jmax (1, biquadStages)));
+    const auto mainCoefficients = makeFilterCoefficients (
+        type, cutoff, stageResonance, currentSampleRate);
+    const auto formantACoefficients = makeFilterCoefficients (
+        PadFilterType::bandPass,
+        juce::jlimit (120.0f, 6500.0f, cutoff * 0.55f),
+        juce::jlimit (0.08f, 0.82f,
+                      0.18f + stageResonance * 0.58f),
+        currentSampleRate);
+    const auto formantBCoefficients = makeFilterCoefficients (
+        PadFilterType::bandPass,
+        juce::jlimit (280.0f, 12000.0f, cutoff * 1.55f),
+        juce::jlimit (0.04f, 0.72f,
+                      0.12f + stageResonance * 0.48f),
+        currentSampleRate);
+    const auto highPassCoefficients = makeFilterCoefficients (
+        PadFilterType::highPass,
+        juce::jmax (20.0f, highPassCutoff), 0.018f,
+        currentSampleRate);
+    const float driveAmount = driveDb / 24.0f;
+    const float driveGain = juce::Decibels::decibelsToGain (driveDb);
+    const float driveNormaliser = driveDb > 0.0f
+                                    ? 1.0f / std::tanh (driveGain)
+                                    : 1.0f;
+    const int channelCount = juce::jmin (2, buffer.getNumChannels());
+    const bool useComb = type == PadFilterType::comb
+                      && ! state.combDelay[0].empty();
+    const bool useFormant = type == PadFilterType::formant;
+    const bool useLadder = type == PadFilterType::ladder;
+    const bool useOnePole = slopeIndex == 0
+                         && (type == PadFilterType::lowPass
+                             || type == PadFilterType::highPass);
+    const float onePoleCoefficient = juce::jlimit (
+        0.0001f, 0.995f,
+        1.0f - std::exp (
+            -juce::MathConstants<float>::twoPi * cutoff
+            / static_cast<float> (juce::jmax (1.0, currentSampleRate))));
+    const float ladderFeedback = resonance * 3.72f;
+    const int combBufferSize = useComb
+                                 ? static_cast<int> (state.combDelay[0].size())
+                                 : 0;
+    const int combDelaySamples = useComb
+        ? juce::jlimit (
+              1, combBufferSize - 1,
+              juce::roundToInt (currentSampleRate
+                                / juce::jmax (20.0f, cutoff)))
+        : 1;
+    const float combFeedback = resonance * 0.92f;
+    const float bypassRampStep = 1.0f / static_cast<float> (
+        juce::jmax (1.0, currentSampleRate * 0.005));
+
+    if (highPassCutoff < 20.0f)
+    {
+        state.highPassZ1.fill (0.0f);
+        state.highPassZ2.fill (0.0f);
+    }
+
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    {
+        state.wetMix += juce::jlimit (
+            -bypassRampStep, bypassRampStep,
+            targetWetMix - state.wetMix);
+        const float wetMix = state.wetMix;
+        const int combReadPosition = useComb
+            ? (state.combWritePosition - combDelaySamples + combBufferSize)
+                % combBufferSize
+            : 0;
+
+        for (int channel = 0; channel < channelCount; ++channel)
+        {
+            float value = buffer.getSample (channel, sample);
+            const float dryValue = value;
+
+            if (driveDb > 0.0f)
+            {
+                const float saturated = std::tanh (value * driveGain)
+                                      * driveNormaliser;
+                value += (saturated - value) * driveAmount;
+            }
+
+            if (useComb)
+            {
+                auto& delay = state.combDelay[static_cast<std::size_t> (channel)];
+                const float delayed = delay[static_cast<std::size_t> (
+                    combReadPosition)];
+                delay[static_cast<std::size_t> (state.combWritePosition)]
+                    = value + delayed * combFeedback;
+                value = value * 0.65f + delayed * 0.35f;
+            }
+            else if (useFormant)
+            {
+                float formantA = value;
+                float formantB = value;
+                auto& aZ1 = state.formantAZ1[static_cast<std::size_t> (channel)];
+                auto& aZ2 = state.formantAZ2[static_cast<std::size_t> (channel)];
+                auto& bZ1 = state.formantBZ1[static_cast<std::size_t> (channel)];
+                auto& bZ2 = state.formantBZ2[static_cast<std::size_t> (channel)];
+
+                for (int stage = 0; stage < biquadStages; ++stage)
+                {
+                    const auto stageIndex = static_cast<std::size_t> (stage);
+                    formantA = processBiquadSample (
+                        formantA, formantACoefficients,
+                        aZ1[stageIndex], aZ2[stageIndex]);
+                    formantB = processBiquadSample (
+                        formantB, formantBCoefficients,
+                        bZ1[stageIndex], bZ2[stageIndex]);
+                }
+
+                value = (formantA + formantB) * 0.78f;
+            }
+            else if (useLadder)
+            {
+                auto& stages = state.ladderStages[
+                    static_cast<std::size_t> (channel)];
+                float poleInput = std::tanh (
+                    value - ladderFeedback
+                                * stages[static_cast<std::size_t> (
+                                    ladderPoles - 1)]);
+
+                for (int pole = 0; pole < ladderPoles; ++pole)
+                {
+                    auto& stage = stages[static_cast<std::size_t> (pole)];
+                    stage += onePoleCoefficient
+                           * (std::tanh (poleInput) - std::tanh (stage));
+                    poleInput = stage;
+                }
+
+                value = poleInput;
+            }
+            else if (useOnePole)
+            {
+                auto& onePole = state.mainOnePole[
+                    static_cast<std::size_t> (channel)];
+                onePole += onePoleCoefficient * (value - onePole);
+                value = type == PadFilterType::highPass
+                      ? value - onePole : onePole;
+            }
+            else
+            {
+                auto& mainZ1 = state.mainZ1[
+                    static_cast<std::size_t> (channel)];
+                auto& mainZ2 = state.mainZ2[
+                    static_cast<std::size_t> (channel)];
+
+                for (int stage = 0; stage < biquadStages; ++stage)
+                {
+                    const auto stageIndex = static_cast<std::size_t> (stage);
+                    value = processBiquadSample (
+                        value, mainCoefficients,
+                        mainZ1[stageIndex], mainZ2[stageIndex]);
+                }
+            }
+
+            if (highPassCutoff >= 20.0f)
+            {
+                value = processBiquadSample (
+                    value, highPassCoefficients,
+                    state.highPassZ1[static_cast<std::size_t> (channel)],
+                    state.highPassZ2[static_cast<std::size_t> (channel)]);
+            }
+
+            buffer.setSample (
+                channel, sample,
+                dryValue + (value - dryValue) * wetMix);
+        }
+
+        if (useComb)
+            state.combWritePosition = (state.combWritePosition + 1)
+                                    % combBufferSize;
+    }
+
+    if (! mainFilterEnabled && state.wetMix <= 0.0f)
+    {
+        resetPadFilterDspState (padIndex);
+        state.wasEnabled = false;
+    }
+}
+
+void SVDrummerAudioProcessor::resetPadCompressorDspState (int padIndex)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    auto& state = padCompressorDspStates[static_cast<std::size_t> (padIndex)];
+    state.gain = 1.0f;
+    state.wetMix = 0.0f;
+    state.wasEnabled = false;
+}
+
+void SVDrummerAudioProcessor::processPadCompressor (
+    int padIndex, juce::AudioBuffer<float>& buffer)
+{
+    if (! isValidPadIndex (padIndex)
+        || buffer.getNumChannels() <= 0 || buffer.getNumSamples() <= 0)
+        return;
+
+    const auto& pad = pads[static_cast<std::size_t> (padIndex)];
+    auto& state = padCompressorDspStates[static_cast<std::size_t> (padIndex)];
+    const bool enabled = pad.compressorEnabled.load();
+    const float targetWetMix = enabled ? 1.0f : 0.0f;
+
+    if (! enabled && state.wetMix <= 0.0f)
+    {
+        if (state.wasEnabled)
+            resetPadCompressorDspState (padIndex);
+
+        return;
+    }
+
+    if (! state.wasEnabled)
+    {
+        state.gain = 1.0f;
+        state.wasEnabled = true;
+    }
+
+    const float thresholdDb = juce::jlimit (
+        -60.0f, 0.0f, pad.compressorThresholdDb.load());
+    const float ratio = juce::jlimit (
+        1.0f, 20.0f, pad.compressorRatio.load());
+    const float attackMs = juce::jlimit (
+        0.1f, 100.0f, pad.compressorAttackMs.load());
+    const float releaseMs = juce::jlimit (
+        10.0f, 1000.0f, pad.compressorReleaseMs.load());
+    const float kneeDb = juce::jlimit (
+        0.0f, 24.0f, pad.compressorKneeDb.load());
+    const double safeSampleRate = juce::jmax (1.0, currentSampleRate);
+    const float attackCoefficient = static_cast<float> (std::exp (
+        -1.0 / (0.001 * static_cast<double> (attackMs) * safeSampleRate)));
+    const float releaseCoefficient = static_cast<float> (std::exp (
+        -1.0 / (0.001 * static_cast<double> (releaseMs) * safeSampleRate)));
+    const float compressionSlope = 1.0f - 1.0f / ratio;
+    const float bypassRampStep = 1.0f / static_cast<float> (
+        juce::jmax (1.0, safeSampleRate * 0.005));
+
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    {
+        state.wetMix += juce::jlimit (
+            -bypassRampStep, bypassRampStep,
+            targetWetMix - state.wetMix);
+        const float wetMix = state.wetMix;
+        float detector = 0.0f;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+            detector = juce::jmax (
+                detector, std::abs (buffer.getSample (channel, sample)));
+
+        const float levelDb = juce::Decibels::gainToDecibels (
+            detector, -120.0f);
+        const float overThreshold = levelDb - thresholdDb;
+        float gainReductionDb = 0.0f;
+
+        if (kneeDb > 0.0f)
+        {
+            const float halfKnee = kneeDb * 0.5f;
+
+            if (overThreshold > -halfKnee)
+            {
+                if (overThreshold >= halfKnee)
+                {
+                    gainReductionDb = compressionSlope * overThreshold;
+                }
+                else
+                {
+                    const float kneePosition = overThreshold + halfKnee;
+                    gainReductionDb = compressionSlope
+                                    * kneePosition * kneePosition
+                                    / (2.0f * kneeDb);
+                }
+            }
+        }
+        else if (overThreshold > 0.0f)
+        {
+            gainReductionDb = compressionSlope * overThreshold;
+        }
+
+        const float targetGain = juce::Decibels::decibelsToGain (
+            -gainReductionDb);
+        const float coefficient = targetGain < state.gain
+                                    ? attackCoefficient
+                                    : releaseCoefficient;
+        state.gain = targetGain + coefficient * (state.gain - targetGain);
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        {
+            const float dryValue = buffer.getSample (channel, sample);
+            const float wetValue = dryValue * state.gain;
+            buffer.setSample (channel, sample,
+                              dryValue + (wetValue - dryValue) * wetMix);
+        }
+    }
+
+    if (! enabled && state.wetMix <= 0.0f)
+    {
+        resetPadCompressorDspState (padIndex);
+    }
+}
+
+void SVDrummerAudioProcessor::processPadSaturation (
+    int padIndex, juce::AudioBuffer<float>& buffer)
+{
+    if (! isValidPadIndex (padIndex)
+        || buffer.getNumChannels() <= 0 || buffer.getNumSamples() <= 0)
+        return;
+
+    const auto& pad = pads[static_cast<std::size_t> (padIndex)];
+    auto& state = padSaturationDspStates[static_cast<std::size_t> (padIndex)];
+    const bool enabled = pad.saturationEnabled.load();
+    const float targetWetMix = enabled ? 1.0f : 0.0f;
+
+    if (! enabled && state.wetMix <= 0.0f)
+    {
+        state.wasEnabled = false;
+        return;
+    }
+
+    if (enabled && ! state.wasEnabled)
+        state.wasEnabled = true;
+
+    const float softAmount = juce::jlimit (
+        0.0f, 1.0f, pad.saturationAmount.load());
+    const float hardClipAmount = juce::jlimit (
+        0.0f, 1.0f, pad.saturationHardClipAmount.load());
+
+    // Pad volume and constant-power pan are output controls, so remove their
+    // attenuation while shaping the waveform and restore it afterwards. This
+    // keeps both nonlinear controls effective on quiet pads without changing
+    // the pad's final volume or stereo position.
+    const float padGain = juce::Decibels::decibelsToGain (
+        pad.volumeDb.load(), -80.0f);
+    const float pan = juce::jlimit (-1.0f, 1.0f, pad.pan.load());
+    const float panAngle = (pan + 1.0f)
+                         * juce::MathConstants<float>::pi * 0.25f;
+    const float leftPan = std::cos (panAngle);
+    const float rightPan = std::sin (panAngle);
+
+    // tanh (shape * x) / tanh (shape) approaches x as shape approaches zero,
+    // giving SAT a continuous identity-to-soft-clipping transfer rather than
+    // behaving mainly as an input gain control. The small ceiling reduction
+    // matches the rounded peak seen in the reference saturation recording.
+    const float softShape = softAmount * 7.0f;
+    const float softNormaliser = softShape > 0.0001f
+                                   ? 1.0f / std::tanh (softShape)
+                                   : 1.0f;
+    const float softCeiling = 1.0f - softAmount * 0.016f;
+
+    // HARD CLIP is a true variable-threshold clipper. It is intentionally not
+    // mixed with the dry signal: samples over the threshold must acquire flat
+    // tops, as they do in the supplied TAL Drum reference sweep.
+    const float hardDriveGain = juce::Decibels::decibelsToGain (
+        hardClipAmount * 30.0f);
+    const float bypassRampStep = 1.0f / static_cast<float> (
+        juce::jmax (1.0, currentSampleRate * 0.005));
+
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    {
+        state.wetMix += juce::jlimit (
+            -bypassRampStep, bypassRampStep,
+            targetWetMix - state.wetMix);
+        const float wetMix = state.wetMix;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        {
+            const float dryValue = buffer.getSample (channel, sample);
+            const float channelScale = padGain * (
+                buffer.getNumChannels() <= 1 ? 1.0f
+              : channel == 0 ? leftPan
+              : channel == 1 ? rightPan
+                             : 1.0f);
+
+            if (channelScale <= 1.0e-7f)
+                continue;
+
+            float value = dryValue / channelScale;
+
+            if (softAmount > 0.0f)
+                value = std::tanh (value * softShape)
+                      * softNormaliser * softCeiling;
+
+            if (hardClipAmount > 0.0f)
+                value = juce::jlimit (
+                    -1.0f, 1.0f, value * hardDriveGain);
+
+            const float wetValue = value * channelScale;
+            buffer.setSample (channel, sample,
+                              dryValue + (wetValue - dryValue) * wetMix);
+        }
+    }
+
+    if (! enabled && state.wetMix <= 0.0f)
+        state.wasEnabled = false;
+}
+
+void SVDrummerAudioProcessor::prepareGlobalEffects()
+{
+    const int maximumDelaySamples = juce::jmax (
+        4, juce::roundToInt (juce::jmax (1.0, currentSampleRate) * 8.0) + 2);
+
+    for (auto& channel : globalDelayBuffer)
+        channel.assign (static_cast<std::size_t> (maximumDelaySamples), 0.0f);
+
+    globalDelayWritePosition = 0;
+    globalDelayCurrentSamples = 0.0f;
+    globalDelayFeedbackLowPass.fill (0.0f);
+    globalDelayBypassMix = 0.0f;
+    globalDelayWasEnabled = false;
+    globalReverbDryBuffer.setSize (
+        2, juce::jmax (1, padRenderBuffer.getNumSamples()), false, true);
+    globalReverb.setSampleRate (juce::jmax (1.0, currentSampleRate));
+    globalReverb.reset();
+    globalReverbBypassMix = 0.0f;
+    globalReverbWasEnabled = false;
+}
+
+void SVDrummerAudioProcessor::processGlobalEffects (
+    juce::AudioBuffer<float>& buffer)
+{
+    if (buffer.getNumChannels() <= 0 || buffer.getNumSamples() <= 0)
+        return;
+
+    processGlobalDelay (buffer);
+    processGlobalReverb (buffer);
+}
+
+void SVDrummerAudioProcessor::processGlobalDelay (
+    juce::AudioBuffer<float>& buffer)
+{
+    const bool enabled = globalDelayEnabled.load();
+    const float targetBypassMix = enabled ? 1.0f : 0.0f;
+    const auto resetDelay = [this]
+    {
+        for (auto& channel : globalDelayBuffer)
+            std::fill (channel.begin(), channel.end(), 0.0f);
+
+        globalDelayWritePosition = 0;
+        globalDelayCurrentSamples = 0.0f;
+        globalDelayFeedbackLowPass.fill (0.0f);
+    };
+
+    if (! enabled && globalDelayBypassMix <= 0.0f)
+    {
+        if (globalDelayWasEnabled)
+            resetDelay();
+
+        globalDelayWasEnabled = false;
+        return;
+    }
+
+    if (globalDelayBuffer[0].size() < 4)
+        prepareGlobalEffects();
+
+    const int bufferSize = static_cast<int> (globalDelayBuffer[0].size());
+    const double sampleRate = juce::jmax (1.0, currentSampleRate);
+    float targetMilliseconds = globalDelayTimeMs.load();
+
+    if (globalDelaySyncEnabled.load())
+    {
+        static constexpr std::array<double, 12> quarterNoteLengths
+        {
+            4.0, 2.0, 4.0 / 3.0, 1.0, 2.0 / 3.0, 0.5,
+            1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125, 1.0 / 12.0, 0.0625
+        };
+        const int division = juce::jlimit (
+            0, static_cast<int> (quarterNoteLengths.size()) - 1,
+            globalDelaySyncDivision.load());
+        const double bpm = juce::jmax (1.0, currentHostTempoBpm.load());
+        targetMilliseconds = static_cast<float> (
+            60000.0 / bpm
+            * quarterNoteLengths[static_cast<std::size_t> (division)]);
+    }
+
+    const float targetDelaySamples = juce::jlimit (
+        1.0f, static_cast<float> (bufferSize - 2),
+        targetMilliseconds * static_cast<float> (sampleRate) / 1000.0f);
+
+    if (! globalDelayWasEnabled || globalDelayCurrentSamples <= 0.0f)
+        globalDelayCurrentSamples = targetDelaySamples;
+
+    globalDelayWasEnabled = true;
+    const float feedback = juce::jlimit (
+        0.0f, 0.95f, globalDelayFeedback.load());
+    const float mix = juce::jlimit (0.0f, 1.0f, globalDelayMix.load());
+    const int channelCount = juce::jmin (2, buffer.getNumChannels());
+    const float delaySmoothing = static_cast<float> (
+        1.0 - std::exp (-1.0 / (0.025 * sampleRate)));
+    const double feedbackCutoff = juce::jmin (9000.0, sampleRate * 0.45);
+    const float feedbackSmoothing = static_cast<float> (
+        std::exp (-2.0 * juce::MathConstants<double>::pi
+                  * feedbackCutoff / sampleRate));
+    const float bypassRampStep = 1.0f / static_cast<float> (
+        juce::jmax (1.0, sampleRate * 0.005));
+
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    {
+        globalDelayBypassMix += juce::jlimit (
+            -bypassRampStep, bypassRampStep,
+            targetBypassMix - globalDelayBypassMix);
+        const float effectiveMix = mix * globalDelayBypassMix;
+        globalDelayCurrentSamples += delaySmoothing
+            * (targetDelaySamples - globalDelayCurrentSamples);
+        float readPosition = static_cast<float> (globalDelayWritePosition)
+                           - globalDelayCurrentSamples;
+
+        while (readPosition < 0.0f)
+            readPosition += static_cast<float> (bufferSize);
+
+        const int first = static_cast<int> (std::floor (readPosition))
+                        % bufferSize;
+        const int second = (first + 1) % bufferSize;
+        const float fraction = readPosition - std::floor (readPosition);
+
+        for (int channel = 0; channel < channelCount; ++channel)
+        {
+            auto& delay = globalDelayBuffer[static_cast<std::size_t> (channel)];
+            const float delayed = juce::jmap (
+                fraction, delay[static_cast<std::size_t> (first)],
+                delay[static_cast<std::size_t> (second)]);
+            auto& filtered = globalDelayFeedbackLowPass[
+                static_cast<std::size_t> (channel)];
+            filtered = delayed + feedbackSmoothing * (filtered - delayed);
+            const float dry = buffer.getSample (channel, sample);
+            delay[static_cast<std::size_t> (globalDelayWritePosition)]
+                = dry + std::tanh (filtered) * feedback;
+            buffer.setSample (channel, sample,
+                              dry * (1.0f - effectiveMix)
+                                  + filtered * effectiveMix);
+        }
+
+        globalDelayWritePosition = (globalDelayWritePosition + 1) % bufferSize;
+    }
+
+    if (! enabled && globalDelayBypassMix <= 0.0f)
+    {
+        resetDelay();
+        globalDelayWasEnabled = false;
+    }
+}
+
+void SVDrummerAudioProcessor::processGlobalReverb (
+    juce::AudioBuffer<float>& buffer)
+{
+    const bool enabled = globalReverbEnabled.load();
+    const float targetBypassMix = enabled ? 1.0f : 0.0f;
+
+    if (! enabled && globalReverbBypassMix <= 0.0f)
+    {
+        if (globalReverbWasEnabled)
+            globalReverb.reset();
+
+        globalReverbWasEnabled = false;
+        return;
+    }
+
+    if (enabled && ! globalReverbWasEnabled)
+    {
+        globalReverb.reset();
+        globalReverbWasEnabled = true;
+    }
+
+    globalReverbDryBuffer.setSize (
+        buffer.getNumChannels(), buffer.getNumSamples(),
+        false, false, true);
+
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        globalReverbDryBuffer.copyFrom (
+            channel, 0, buffer, channel, 0, buffer.getNumSamples());
+
+    juce::Reverb::Parameters parameters;
+    parameters.roomSize = juce::jlimit (0.0f, 1.0f, globalReverbSize.load());
+    parameters.damping = juce::jlimit (0.0f, 1.0f, globalReverbDamping.load());
+    parameters.width = juce::jlimit (0.0f, 1.0f, globalReverbWidth.load());
+    parameters.wetLevel = juce::jlimit (0.0f, 1.0f, globalReverbMix.load());
+    parameters.dryLevel = 1.0f - parameters.wetLevel;
+    parameters.freezeMode = 0.0f;
+    globalReverb.setParameters (parameters);
+
+    if (buffer.getNumChannels() >= 2)
+        globalReverb.processStereo (buffer.getWritePointer (0),
+                                    buffer.getWritePointer (1),
+                                    buffer.getNumSamples());
+    else
+        globalReverb.processMono (buffer.getWritePointer (0),
+                                  buffer.getNumSamples());
+
+    const float bypassRampStep = 1.0f / static_cast<float> (
+        juce::jmax (1.0, currentSampleRate * 0.005));
+
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    {
+        globalReverbBypassMix += juce::jlimit (
+            -bypassRampStep, bypassRampStep,
+            targetBypassMix - globalReverbBypassMix);
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        {
+            const float dry = globalReverbDryBuffer.getSample (channel, sample);
+            const float wet = buffer.getSample (channel, sample);
+            buffer.setSample (
+                channel, sample,
+                dry + (wet - dry) * globalReverbBypassMix);
+        }
+    }
+
+    if (! enabled && globalReverbBypassMix <= 0.0f)
+    {
+        globalReverb.reset();
+        globalReverbWasEnabled = false;
     }
 }
 
@@ -1204,6 +3375,172 @@ void SVDrummerAudioProcessor::clearPadSample (int padIndex)
     markPortableSettingsDirty();
 }
 
+SVDrummerAudioProcessor::KitPadState
+SVDrummerAudioProcessor::capturePadState (int padIndex) const
+{
+    KitPadState state;
+
+    if (! isValidPadIndex (padIndex))
+        return state;
+
+    const auto& pad = pads[static_cast<std::size_t> (padIndex)];
+    state.sample = std::atomic_load_explicit (
+        &pad.sample, std::memory_order_acquire);
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        state.samplePath = pad.samplePath;
+        state.displayName = pad.displayName;
+    }
+
+    state.midiNote = pad.midiNote.load();
+    state.muted = pad.muted.load();
+    state.soloed = pad.soloed.load();
+    state.reversed = pad.reversed.load();
+    state.volumeDb = pad.volumeDb.load();
+    state.pan = pad.pan.load();
+    state.tuneSemitones = pad.tuneSemitones.load();
+    state.outputBus = pad.outputBus.load();
+    state.chokeGroup = pad.chokeGroup.load();
+    state.ampCurve = pad.ampCurve.load();
+    state.ampAttackMs = pad.ampAttackMs.load();
+    state.ampDecayMs = pad.ampDecayMs.load();
+    state.ampSustain = pad.ampSustain.load();
+    state.ampReleaseMs = pad.ampReleaseMs.load();
+    state.filterCutoffHz = pad.filterCutoffHz.load();
+    state.filterResonance = pad.filterResonance.load();
+    state.filterDriveDb = pad.filterDriveDb.load();
+    state.filterEnabled = pad.filterEnabled.load();
+    state.filterType = pad.filterType.load();
+    state.filterSlope = pad.filterSlope.load();
+    state.highPassCutoffHz = pad.highPassCutoffHz.load();
+    state.compressorEnabled = pad.compressorEnabled.load();
+    state.compressorThresholdDb = pad.compressorThresholdDb.load();
+    state.compressorRatio = pad.compressorRatio.load();
+    state.compressorAttackMs = pad.compressorAttackMs.load();
+    state.compressorReleaseMs = pad.compressorReleaseMs.load();
+    state.compressorKneeDb = pad.compressorKneeDb.load();
+    state.saturationAmount = pad.saturationAmount.load();
+    state.saturationHardClipAmount = pad.saturationHardClipAmount.load();
+    state.saturationEnabled = pad.saturationEnabled.load();
+    state.sampleStart = pad.sampleStart.load();
+    state.sampleEnd = pad.sampleEnd.load();
+    state.loopEnabled = pad.loopEnabled.load();
+    state.loopMode = pad.loopMode.load();
+    state.sequencerGated = pad.sequencerGated.load();
+    state.loopStart = pad.loopStart.load();
+    state.loopEnd = pad.loopEnd.load();
+    return state;
+}
+
+void SVDrummerAudioProcessor::applyPadState (
+    int padIndex, const KitPadState& state)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    auto& pad = pads[static_cast<std::size_t> (padIndex)];
+    pad.sampleRevision.fetch_add (1);
+    std::atomic_store_explicit (&pad.sample, state.sample,
+                                std::memory_order_release);
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        pad.samplePath = state.samplePath;
+        pad.displayName = state.displayName;
+    }
+
+    pad.sampleStart.store (state.sampleStart);
+    pad.sampleEnd.store (state.sampleEnd);
+    pad.loopStart.store (state.loopStart);
+    pad.loopEnd.store (state.loopEnd);
+
+    setPadMidiNote (padIndex, state.midiNote);
+    setPadMuted (padIndex, state.muted);
+    setPadSoloed (padIndex, state.soloed);
+    setPadReversed (padIndex, state.reversed);
+    setPadVolumeDb (padIndex, state.volumeDb);
+    setPadPan (padIndex, state.pan);
+    setPadTuneSemitones (padIndex, state.tuneSemitones);
+    setPadOutputBus (padIndex, state.outputBus);
+    setPadChokeGroup (padIndex, state.chokeGroup);
+    setPadAmpCurve (padIndex, state.ampCurve);
+    setPadAmpAttackMs (padIndex, state.ampAttackMs);
+    setPadAmpDecayMs (padIndex, state.ampDecayMs);
+    setPadAmpSustain (padIndex, state.ampSustain);
+    setPadAmpReleaseMs (padIndex, state.ampReleaseMs);
+    setPadFilterCutoffHz (padIndex, state.filterCutoffHz);
+    setPadFilterResonance (padIndex, state.filterResonance);
+    setPadFilterDriveDb (padIndex, state.filterDriveDb);
+    setPadFilterEnabled (padIndex, state.filterEnabled);
+    setPadFilterType (
+        padIndex,
+        static_cast<PadFilterType> (juce::jlimit (1, 7, state.filterType)));
+    setPadFilterSlopeIndex (padIndex, state.filterSlope);
+    setPadHighPassCutoffHz (padIndex, state.highPassCutoffHz);
+    setPadCompressorEnabled (padIndex, state.compressorEnabled);
+    setPadCompressorThresholdDb (padIndex, state.compressorThresholdDb);
+    setPadCompressorRatio (padIndex, state.compressorRatio);
+    setPadCompressorAttackMs (padIndex, state.compressorAttackMs);
+    setPadCompressorReleaseMs (padIndex, state.compressorReleaseMs);
+    setPadCompressorKneeDb (padIndex, state.compressorKneeDb);
+    setPadSaturationAmount (padIndex, state.saturationAmount);
+    setPadSaturationHardClipAmount (
+        padIndex, state.saturationHardClipAmount);
+    setPadSaturationEnabled (padIndex, state.saturationEnabled);
+    setPadLoopEnabled (padIndex, state.loopEnabled);
+    setPadLoopMode (
+        padIndex,
+        static_cast<PadLoopMode> (juce::jlimit (0, 1, state.loopMode)));
+    setPadSequencerGated (padIndex, state.sequencerGated);
+    markPortableSettingsDirty();
+}
+
+void SVDrummerAudioProcessor::resetPadToDefault (int padIndex)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    KitPadState defaults;
+    defaults.midiNote = 36 + padIndex;
+    applyPadState (padIndex, defaults);
+}
+
+void SVDrummerAudioProcessor::copyPad (int padIndex)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const auto state = capturePadState (padIndex);
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        copiedPad = state;
+    }
+
+    copiedPadAvailable.store (true);
+}
+
+bool SVDrummerAudioProcessor::canPastePad() const noexcept
+{
+    return copiedPadAvailable.load();
+}
+
+void SVDrummerAudioProcessor::pastePad (int padIndex)
+{
+    if (! isValidPadIndex (padIndex) || ! copiedPadAvailable.load())
+        return;
+
+    KitPadState state;
+
+    {
+        const juce::ScopedLock lock (stateLock);
+        state = copiedPad;
+    }
+
+    applyPadState (padIndex, state);
+}
+
 std::shared_ptr<const SVDrummerAudioProcessor::SampleData>
 SVDrummerAudioProcessor::getPadSample (int padIndex) const
 {
@@ -1227,8 +3564,14 @@ void SVDrummerAudioProcessor::setPadMidiNote (int padIndex, int midiNote)
     if (! isValidPadIndex (padIndex))
         return;
 
-    pads[static_cast<std::size_t> (padIndex)].midiNote.store (
-        juce::jlimit (0, 127, midiNote));
+    const int value = juce::jlimit (0, 127, midiNote);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].midiNote,
+            static_cast<float> (value)))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].midiNote.store (value);
     markPortableSettingsDirty();
 }
 
@@ -1240,11 +3583,16 @@ bool SVDrummerAudioProcessor::isPadMuted (int padIndex) const
 
 void SVDrummerAudioProcessor::setPadMuted (int padIndex, bool shouldBeMuted)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].muted.store (shouldBeMuted);
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].mute,
+            shouldBeMuted ? 1.0f : 0.0f))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].muted.store (shouldBeMuted);
+    markPortableSettingsDirty();
 }
 
 bool SVDrummerAudioProcessor::isPadSoloed (int padIndex) const
@@ -1255,11 +3603,16 @@ bool SVDrummerAudioProcessor::isPadSoloed (int padIndex) const
 
 void SVDrummerAudioProcessor::setPadSoloed (int padIndex, bool shouldBeSoloed)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].soloed.store (shouldBeSoloed);
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].solo,
+            shouldBeSoloed ? 1.0f : 0.0f))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].soloed.store (shouldBeSoloed);
+    markPortableSettingsDirty();
 }
 
 bool SVDrummerAudioProcessor::isPadReversed (int padIndex) const
@@ -1270,11 +3623,16 @@ bool SVDrummerAudioProcessor::isPadReversed (int padIndex) const
 
 void SVDrummerAudioProcessor::setPadReversed (int padIndex, bool shouldBeReversed)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].reversed.store (shouldBeReversed);
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].reverse,
+            shouldBeReversed ? 1.0f : 0.0f))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].reversed.store (shouldBeReversed);
+    markPortableSettingsDirty();
 }
 
 float SVDrummerAudioProcessor::getPadVolumeDb (int padIndex) const
@@ -1346,6 +3704,38 @@ void SVDrummerAudioProcessor::setPadTuneSemitones (int padIndex, float semitones
     markPortableSettingsDirty();
 }
 
+int SVDrummerAudioProcessor::getPadOutputBus (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? juce::jlimit (
+               0, numberOfPadOutputBuses,
+               pads[static_cast<std::size_t> (padIndex)].outputBus.load())
+         : 0;
+}
+
+void SVDrummerAudioProcessor::setPadOutputBus (int padIndex, int outputBus)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const int value = juce::jlimit (0, numberOfPadOutputBuses, outputBus);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].outputBus,
+            static_cast<float> (value)))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].outputBus.store (value);
+    markPortableSettingsDirty();
+}
+
+juce::String SVDrummerAudioProcessor::getPadOutputBusName (int outputBus)
+{
+    const int value = juce::jlimit (0, numberOfPadOutputBuses, outputBus);
+    return value == 0 ? juce::String ("MAIN")
+                      : "AUX " + juce::String (value);
+}
+
 int SVDrummerAudioProcessor::getPadChokeGroup (int padIndex) const
 {
     return isValidPadIndex (padIndex)
@@ -1355,12 +3745,41 @@ int SVDrummerAudioProcessor::getPadChokeGroup (int padIndex) const
 
 void SVDrummerAudioProcessor::setPadChokeGroup (int padIndex, int chokeGroup)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].chokeGroup.store (
-            juce::jlimit (0, numberOfPads, chokeGroup));
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const int value = juce::jlimit (0, numberOfPads, chokeGroup);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].chokeGroup,
+            static_cast<float> (value)))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].chokeGroup.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadAmpCurve (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].ampCurve.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadAmpCurve (int padIndex, float curve)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (-1.0f, 1.0f, curve);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].ampCurve,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].ampCurve.store (value);
+    markPortableSettingsDirty();
 }
 
 float SVDrummerAudioProcessor::getPadAmpAttackMs (int padIndex) const
@@ -1373,12 +3792,18 @@ float SVDrummerAudioProcessor::getPadAmpAttackMs (int padIndex) const
 void SVDrummerAudioProcessor::setPadAmpAttackMs (int padIndex,
                                                   float milliseconds)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].ampAttackMs.store (
-            juce::jlimit (0.0f, 2000.0f, milliseconds));
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 2000.0f, milliseconds);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].ampAttack,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].ampAttackMs.store (value);
+    markPortableSettingsDirty();
 }
 
 float SVDrummerAudioProcessor::getPadAmpDecayMs (int padIndex) const
@@ -1391,12 +3816,18 @@ float SVDrummerAudioProcessor::getPadAmpDecayMs (int padIndex) const
 void SVDrummerAudioProcessor::setPadAmpDecayMs (int padIndex,
                                                  float milliseconds)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].ampDecayMs.store (
-            juce::jlimit (0.0f, 5000.0f, milliseconds));
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 5000.0f, milliseconds);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].ampDecay,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].ampDecayMs.store (value);
+    markPortableSettingsDirty();
 }
 
 float SVDrummerAudioProcessor::getPadAmpSustain (int padIndex) const
@@ -1408,12 +3839,18 @@ float SVDrummerAudioProcessor::getPadAmpSustain (int padIndex) const
 
 void SVDrummerAudioProcessor::setPadAmpSustain (int padIndex, float level)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].ampSustain.store (
-            juce::jlimit (0.0f, 1.0f, level));
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 1.0f, level);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].ampSustain,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].ampSustain.store (value);
+    markPortableSettingsDirty();
 }
 
 float SVDrummerAudioProcessor::getPadAmpReleaseMs (int padIndex) const
@@ -1426,12 +3863,578 @@ float SVDrummerAudioProcessor::getPadAmpReleaseMs (int padIndex) const
 void SVDrummerAudioProcessor::setPadAmpReleaseMs (int padIndex,
                                                    float milliseconds)
 {
-    if (isValidPadIndex (padIndex))
-    {
-        pads[static_cast<std::size_t> (padIndex)].ampReleaseMs.store (
-            juce::jlimit (0.0f, 5000.0f, milliseconds));
-        markPortableSettingsDirty();
-    }
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 5000.0f, milliseconds);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].ampRelease,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].ampReleaseMs.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadFilterCutoffHz (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].filterCutoffHz.load()
+         : 20000.0f;
+}
+
+void SVDrummerAudioProcessor::setPadFilterCutoffHz (int padIndex,
+                                                     float frequencyHz)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (20.0f, 20000.0f, frequencyHz);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].filterCutoff,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].filterCutoffHz.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadFilterResonance (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].filterResonance.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadFilterResonance (int padIndex, float amount)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].filterResonance,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].filterResonance.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadFilterDriveDb (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].filterDriveDb.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadFilterDriveDb (int padIndex, float decibels)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 24.0f, decibels);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].filterDrive,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].filterDriveDb.store (value);
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isPadFilterEnabled (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+        && pads[static_cast<std::size_t> (padIndex)].filterEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setPadFilterEnabled (int padIndex,
+                                                    bool shouldBeEnabled)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .filterEnabled,
+            shouldBeEnabled ? 1.0f : 0.0f))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].filterEnabled.store (
+        shouldBeEnabled);
+    markPortableSettingsDirty();
+}
+
+SVDrummerAudioProcessor::PadFilterType
+SVDrummerAudioProcessor::getPadFilterType (int padIndex) const
+{
+    const int value = isValidPadIndex (padIndex)
+                        ? pads[static_cast<std::size_t> (padIndex)]
+                              .filterType.load()
+                        : static_cast<int> (PadFilterType::lowPass);
+    return static_cast<PadFilterType> (juce::jlimit (1, 7, value));
+}
+
+void SVDrummerAudioProcessor::setPadFilterType (int padIndex,
+                                                 PadFilterType type)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const int value = juce::jlimit (1, 7, static_cast<int> (type));
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].filterType,
+            static_cast<float> (value)))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].filterType.store (value);
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getPadFilterSlopeIndex (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? juce::jlimit (0, 3,
+               pads[static_cast<std::size_t> (padIndex)].filterSlope.load())
+         : 1;
+}
+
+void SVDrummerAudioProcessor::setPadFilterSlopeIndex (int padIndex,
+                                                       int slopeIndex)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const int value = juce::jlimit (0, 3, slopeIndex);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].filterSlope,
+            static_cast<float> (value)))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].filterSlope.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadHighPassCutoffHz (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].highPassCutoffHz.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadHighPassCutoffHz (int padIndex,
+                                                       float frequencyHz)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 2000.0f, frequencyHz);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].highPassCutoff,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].highPassCutoffHz.store (value);
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isPadCompressorEnabled (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+        && pads[static_cast<std::size_t> (padIndex)].compressorEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setPadCompressorEnabled (int padIndex,
+                                                        bool shouldBeEnabled)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = shouldBeEnabled ? 1.0f : 0.0f;
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .compressorEnabled,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].compressorEnabled.store (
+        shouldBeEnabled);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadCompressorThresholdDb (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)]
+               .compressorThresholdDb.load()
+         : -18.0f;
+}
+
+void SVDrummerAudioProcessor::setPadCompressorThresholdDb (
+    int padIndex, float decibels)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (-60.0f, 0.0f, decibels);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .compressorThreshold,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].compressorThresholdDb.store (
+        value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadCompressorRatio (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].compressorRatio.load()
+         : 4.0f;
+}
+
+void SVDrummerAudioProcessor::setPadCompressorRatio (int padIndex, float ratio)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (1.0f, 20.0f, ratio);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .compressorRatio,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].compressorRatio.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadCompressorAttackMs (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].compressorAttackMs.load()
+         : 10.0f;
+}
+
+void SVDrummerAudioProcessor::setPadCompressorAttackMs (
+    int padIndex, float milliseconds)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.1f, 100.0f, milliseconds);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .compressorAttack,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].compressorAttackMs.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadCompressorReleaseMs (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].compressorReleaseMs.load()
+         : 100.0f;
+}
+
+void SVDrummerAudioProcessor::setPadCompressorReleaseMs (
+    int padIndex, float milliseconds)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (10.0f, 1000.0f, milliseconds);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .compressorRelease,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].compressorReleaseMs.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadCompressorKneeDb (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].compressorKneeDb.load()
+         : 6.0f;
+}
+
+void SVDrummerAudioProcessor::setPadCompressorKneeDb (int padIndex,
+                                                       float decibels)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 24.0f, decibels);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .compressorKnee,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].compressorKneeDb.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadSaturationAmount (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].saturationAmount.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadSaturationAmount (int padIndex,
+                                                       float amount)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .saturationAmount,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].saturationAmount.store (value);
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getPadSaturationHardClipAmount (
+    int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)]
+               .saturationHardClipAmount.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadSaturationHardClipAmount (
+    int padIndex, float amount)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .saturationHardClip,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].saturationHardClipAmount.store (
+        value);
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isPadSaturationEnabled (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+        && pads[static_cast<std::size_t> (padIndex)].saturationEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setPadSaturationEnabled (
+    int padIndex, bool shouldBeEnabled)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .saturationEnabled,
+            shouldBeEnabled ? 1.0f : 0.0f))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].saturationEnabled.store (
+        shouldBeEnabled);
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isGlobalDelayEnabled() const noexcept
+{
+    return globalDelayEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelayEnabled (bool shouldBeEnabled)
+{
+    if (! setHostParameterValue (globalDelayEnabledParameter,
+                                 shouldBeEnabled ? 1.0f : 0.0f))
+        globalDelayEnabled.store (shouldBeEnabled);
+
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isGlobalDelaySyncEnabled() const noexcept
+{
+    return globalDelaySyncEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelaySyncEnabled (
+    bool shouldBeEnabled)
+{
+    if (! setHostParameterValue (globalDelaySyncEnabledParameter,
+                                 shouldBeEnabled ? 1.0f : 0.0f))
+        globalDelaySyncEnabled.store (shouldBeEnabled);
+
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getGlobalDelaySyncDivision() const noexcept
+{
+    return juce::jlimit (0, 11, globalDelaySyncDivision.load());
+}
+
+void SVDrummerAudioProcessor::setGlobalDelaySyncDivision (int divisionIndex)
+{
+    const int value = juce::jlimit (0, 11, divisionIndex);
+
+    if (! setHostParameterValue (globalDelaySyncDivisionParameter,
+                                 static_cast<float> (value)))
+        globalDelaySyncDivision.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalDelayTimeMs() const noexcept
+{
+    return globalDelayTimeMs.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelayTimeMs (float milliseconds)
+{
+    const float value = juce::jlimit (1.0f, 2000.0f, milliseconds);
+
+    if (! setHostParameterValue (globalDelayTimeParameter, value))
+        globalDelayTimeMs.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalDelayFeedback() const noexcept
+{
+    return globalDelayFeedback.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelayFeedback (float amount)
+{
+    const float value = juce::jlimit (0.0f, 0.95f, amount);
+
+    if (! setHostParameterValue (globalDelayFeedbackParameter, value))
+        globalDelayFeedback.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalDelayMix() const noexcept
+{
+    return globalDelayMix.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelayMix (float amount)
+{
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (! setHostParameterValue (globalDelayMixParameter, value))
+        globalDelayMix.store (value);
+
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isGlobalReverbEnabled() const noexcept
+{
+    return globalReverbEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalReverbEnabled (bool shouldBeEnabled)
+{
+    if (! setHostParameterValue (globalReverbEnabledParameter,
+                                 shouldBeEnabled ? 1.0f : 0.0f))
+        globalReverbEnabled.store (shouldBeEnabled);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalReverbSize() const noexcept
+{
+    return globalReverbSize.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalReverbSize (float amount)
+{
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (! setHostParameterValue (globalReverbSizeParameter, value))
+        globalReverbSize.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalReverbDamping() const noexcept
+{
+    return globalReverbDamping.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalReverbDamping (float amount)
+{
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (! setHostParameterValue (globalReverbDampingParameter, value))
+        globalReverbDamping.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalReverbWidth() const noexcept
+{
+    return globalReverbWidth.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalReverbWidth (float amount)
+{
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (! setHostParameterValue (globalReverbWidthParameter, value))
+        globalReverbWidth.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalReverbMix() const noexcept
+{
+    return globalReverbMix.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalReverbMix (float amount)
+{
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (! setHostParameterValue (globalReverbMixParameter, value))
+        globalReverbMix.store (value);
+
+    markPortableSettingsDirty();
 }
 
 int SVDrummerAudioProcessor::getPadSampleLength (int padIndex) const
@@ -1524,7 +4527,61 @@ void SVDrummerAudioProcessor::setPadLoopEnabled (int padIndex, bool shouldLoop)
     if (! isValidPadIndex (padIndex))
         return;
 
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].loopEnabled,
+            shouldLoop ? 1.0f : 0.0f))
+        return;
+
     pads[static_cast<std::size_t> (padIndex)].loopEnabled.store (shouldLoop);
+    markPortableSettingsDirty();
+}
+
+SVDrummerAudioProcessor::PadLoopMode
+SVDrummerAudioProcessor::getPadLoopMode (int padIndex) const
+{
+    const int value = isValidPadIndex (padIndex)
+                        ? pads[static_cast<std::size_t> (padIndex)]
+                              .loopMode.load()
+                        : static_cast<int> (PadLoopMode::normal);
+    return static_cast<PadLoopMode> (juce::jlimit (0, 1, value));
+}
+
+void SVDrummerAudioProcessor::setPadLoopMode (int padIndex, PadLoopMode mode)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const int value = juce::jlimit (0, 1, static_cast<int> (mode));
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)].loopMode,
+            static_cast<float> (value)))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].loopMode.store (value);
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::isPadSequencerGated (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+        && pads[static_cast<std::size_t> (padIndex)].sequencerGated.load();
+}
+
+void SVDrummerAudioProcessor::setPadSequencerGated (
+    int padIndex, bool shouldBeGated)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .sequencerGated,
+            shouldBeGated ? 1.0f : 0.0f))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].sequencerGated.store (
+        shouldBeGated);
     markPortableSettingsDirty();
 }
 
@@ -1731,7 +4788,18 @@ void SVDrummerAudioProcessor::triggerPadFromInterface (int padIndex, float veloc
 
     pendingInterfaceVelocities[static_cast<std::size_t> (padIndex)].store (
         juce::jlimit (0.0f, 1.0f, velocity));
-    pendingInterfaceTriggers.fetch_or (
+    const auto padBit =
+        std::uint32_t { 1 } << static_cast<unsigned int> (padIndex);
+    pendingInterfaceReleases.fetch_and (~padBit);
+    pendingInterfaceTriggers.fetch_or (padBit);
+}
+
+void SVDrummerAudioProcessor::releasePadFromInterface (int padIndex)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    pendingInterfaceReleases.fetch_or (
         std::uint32_t { 1 } << static_cast<unsigned int> (padIndex));
 }
 
@@ -1758,7 +4826,12 @@ void SVDrummerAudioProcessor::stopPatternMidiPlayback()
         sequencerEnabled.store (false);
 
     activePatternGateNote.store (-1);
+    pendingPatternSelection.store (-1);
     pendingPatternGateStartNote.store (-1);
+    queuedSyncedPatternSelection.store (-1);
+    queuedSyncedPatternGateNote.store (-1);
+    pendingPatternPlaybackSelection.store (-1);
+    patternPlaybackSwitchPending.store (false);
     patternGateActive.store (false);
     patternGateWaitingForSelection.store (false);
     patternGateRestartCounter.fetch_add (1);
@@ -1792,8 +4865,45 @@ void SVDrummerAudioProcessor::setPatternMidiMode (PatternMidiMode newMode)
     patternGateWaitingForSelection.store (false);
     activePatternGateNote.store (-1);
     pendingPatternGateStartNote.store (-1);
+    queuedSyncedPatternSelection.store (-1);
+    queuedSyncedPatternGateNote.store (-1);
     sequencerEnabled.store (false);
     patternGateRestartCounter.fetch_add (1);
+    markPortableSettingsDirty();
+}
+
+SVDrummerAudioProcessor::PatternSyncMode
+SVDrummerAudioProcessor::getPatternSyncMode() const noexcept
+{
+    return static_cast<PatternSyncMode> (juce::jlimit (
+        static_cast<int> (PatternSyncMode::played),
+        static_cast<int> (PatternSyncMode::beat),
+        patternSyncMode.load()));
+}
+
+void SVDrummerAudioProcessor::setPatternSyncMode (PatternSyncMode newMode)
+{
+    const int mode = juce::jlimit (
+        static_cast<int> (PatternSyncMode::played),
+        static_cast<int> (PatternSyncMode::beat),
+        static_cast<int> (newMode));
+
+    if (setHostParameterValue (
+            patternSyncModeParameter, static_cast<float> (mode)))
+        return;
+
+    if (patternSyncMode.exchange (mode) == mode)
+        return;
+
+    if (queuedSyncedPatternSelection.load() >= 0)
+    {
+        if (mode == static_cast<int> (PatternSyncMode::played))
+            dispatchQueuedPatternSelection();
+        else
+            queuedSyncedPatternBoundaryPpq.store (
+                getNextPatternSyncBoundary (currentHostPpqPosition.load()));
+    }
+
     markPortableSettingsDirty();
 }
 
@@ -1821,6 +4931,7 @@ void SVDrummerAudioProcessor::setPatternBars (int bars)
             sequence.loopLength.load()));
     }
 
+    refreshPatternPlaybackBars();
     markPortableSettingsDirty();
 }
 
@@ -1836,8 +4947,16 @@ void SVDrummerAudioProcessor::setLaneDivision (int laneIndex, int divisionIndex)
     if (! isValidPadIndex (laneIndex))
         return;
 
+    const int value = juce::jlimit (
+        0, sequencerDivisionCount - 1, divisionIndex);
+
+    if (setHostParameterValue (
+            laneHostParameters[static_cast<std::size_t> (laneIndex)].division,
+            static_cast<float> (value)))
+        return;
+
     auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
-    lane.division.store (juce::jlimit (0, sequencerDivisionCount - 1, divisionIndex));
+    lane.division.store (value);
     lane.loopLength.store (juce::jlimit (
         1, getLaneMaximumLoopLength (laneIndex), lane.loopLength.load()));
     markPortableSettingsDirty();
@@ -1855,8 +4974,15 @@ void SVDrummerAudioProcessor::setLaneLoopLength (int laneIndex, int lengthInStep
     if (! isValidPadIndex (laneIndex))
         return;
 
-    sequenceLanes[static_cast<std::size_t> (laneIndex)].loopLength.store (
-        juce::jlimit (1, getLaneMaximumLoopLength (laneIndex), lengthInSteps));
+    const int value = juce::jlimit (
+        1, getLaneMaximumLoopLength (laneIndex), lengthInSteps);
+
+    if (setHostParameterValue (
+            laneHostParameters[static_cast<std::size_t> (laneIndex)].loopLength,
+            static_cast<float> (value)))
+        return;
+
+    sequenceLanes[static_cast<std::size_t> (laneIndex)].loopLength.store (value);
     markPortableSettingsDirty();
 }
 
@@ -1908,6 +5034,257 @@ double SVDrummerAudioProcessor::getSequencerPatternPositionQuarterNotes() const
     return sequencerPatternPositionQuarterNotes.load();
 }
 
+int SVDrummerAudioProcessor::getPatternPlaybackStep (int stepIndex) const
+{
+    if (stepIndex < 0 || stepIndex >= maximumPatternPlaybackSteps)
+        return -1;
+
+    return juce::jlimit (
+        -1, numberOfPatterns - 1,
+        patternPlaybackSteps[static_cast<std::size_t> (stepIndex)].load());
+}
+
+void SVDrummerAudioProcessor::setPatternPlaybackStep (
+    int stepIndex, int patternIndex)
+{
+    if (stepIndex < 0 || stepIndex >= maximumPatternPlaybackSteps)
+        return;
+
+    patternPlaybackSteps[static_cast<std::size_t> (stepIndex)].store (
+        juce::jlimit (-1, numberOfPatterns - 1, patternIndex));
+
+    if (activePatternPlaybackStep.load() == stepIndex)
+        patternTimelineResetCounter.fetch_add (1);
+
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getActivePatternPlaybackStep() const noexcept
+{
+    return activePatternPlaybackStep.load();
+}
+
+int SVDrummerAudioProcessor::getPatternPlaybackBars() const noexcept
+{
+    return juce::jlimit (1, maximumPatternBars, patternPlaybackBars.load());
+}
+
+bool SVDrummerAudioProcessor::isPatternPlaybackChainEnabled() const noexcept
+{
+    return patternPlaybackChainEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setPatternPlaybackChainEnabled (
+    bool shouldBeEnabled)
+{
+    if (setHostParameterValue (
+            patternPlaybackChainEnabledParameter,
+            shouldBeEnabled ? 1.0f : 0.0f))
+        return;
+
+    if (patternPlaybackChainEnabled.exchange (shouldBeEnabled)
+        != shouldBeEnabled)
+    {
+        activePatternPlaybackStep.store (-1);
+        patternTimelineResetCounter.fetch_add (1);
+        markPortableSettingsDirty();
+    }
+}
+
+bool SVDrummerAudioProcessor::isPatternPlaybackLoopEnabled() const noexcept
+{
+    return patternPlaybackLoopEnabled.load();
+}
+
+void SVDrummerAudioProcessor::setPatternPlaybackLoopEnabled (bool shouldLoop)
+{
+    if (setHostParameterValue (
+            patternPlaybackLoopParameter, shouldLoop ? 1.0f : 0.0f))
+        return;
+
+    if (patternPlaybackLoopEnabled.exchange (shouldLoop) != shouldLoop)
+        markPortableSettingsDirty();
+}
+
+SVDrummerAudioProcessor::PatternLaneState
+SVDrummerAudioProcessor::captureSequenceLaneState (int laneIndex) const
+{
+    PatternLaneState state;
+
+    if (! isValidPadIndex (laneIndex))
+        return state;
+
+    state.division = getLaneDivision (laneIndex);
+    state.loopLength = getLaneLoopLength (laneIndex);
+
+    for (int step = 0; step < maximumStepsPerLane; ++step)
+        state.stepVelocities[static_cast<std::size_t> (step)] =
+            static_cast<std::uint8_t> (
+                getSequenceStepVelocity (laneIndex, step));
+
+    return state;
+}
+
+void SVDrummerAudioProcessor::applySequenceLaneState (
+    int laneIndex, const PatternLaneState& state)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
+    lane.division.store (juce::jlimit (
+        0, sequencerDivisionCount - 1, state.division));
+    lane.loopLength.store (juce::jlimit (
+        1, getLaneMaximumLoopLength (laneIndex), state.loopLength));
+
+    for (int step = 0; step < maximumStepsPerLane; ++step)
+        lane.stepVelocities[static_cast<std::size_t> (step)].store (
+            state.stepVelocities[static_cast<std::size_t> (step)]);
+
+    lane.activeStep.store (-1);
+    patternChangeCounter.fetch_add (1);
+    patternTimelineResetCounter.fetch_add (1);
+    markPortableSettingsDirty();
+}
+
+void SVDrummerAudioProcessor::captureSequenceLaneUndoState (int laneIndex)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    undoSequenceLane = captureSequenceLaneState (laneIndex);
+    undoSequenceLaneIndex.store (laneIndex);
+}
+
+void SVDrummerAudioProcessor::copySequenceLane (int laneIndex)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    copiedSequenceLane = captureSequenceLaneState (laneIndex);
+    copiedSequenceLaneAvailable.store (true);
+}
+
+bool SVDrummerAudioProcessor::canPasteSequenceLane() const noexcept
+{
+    return copiedSequenceLaneAvailable.load();
+}
+
+void SVDrummerAudioProcessor::pasteSequenceLane (int laneIndex)
+{
+    if (! isValidPadIndex (laneIndex) || ! canPasteSequenceLane())
+        return;
+
+    captureSequenceLaneUndoState (laneIndex);
+    applySequenceLaneState (laneIndex, copiedSequenceLane);
+}
+
+void SVDrummerAudioProcessor::randomiseSequenceLane (int laneIndex)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    captureSequenceLaneUndoState (laneIndex);
+    auto randomised = captureSequenceLaneState (laneIndex);
+    randomised.stepVelocities.fill (0);
+    const int steps = juce::jlimit (
+        1, maximumStepsPerLane, randomised.loopLength);
+    auto& random = juce::Random::getSystemRandom();
+    bool addedStep = false;
+
+    for (int step = 0; step < steps; ++step)
+    {
+        if (random.nextFloat() < 0.25f)
+        {
+            randomised.stepVelocities[static_cast<std::size_t> (step)] =
+                static_cast<std::uint8_t> (72 + random.nextInt (56));
+            addedStep = true;
+        }
+    }
+
+    if (! addedStep)
+    {
+        const int step = random.nextInt (steps);
+        randomised.stepVelocities[static_cast<std::size_t> (step)] =
+            static_cast<std::uint8_t> (72 + random.nextInt (56));
+    }
+
+    applySequenceLaneState (laneIndex, randomised);
+}
+
+void SVDrummerAudioProcessor::clearSequenceLane (int laneIndex)
+{
+    if (! isValidPadIndex (laneIndex))
+        return;
+
+    captureSequenceLaneUndoState (laneIndex);
+    auto cleared = captureSequenceLaneState (laneIndex);
+    cleared.stepVelocities.fill (0);
+    applySequenceLaneState (laneIndex, cleared);
+}
+
+bool SVDrummerAudioProcessor::canUndoSequenceLaneOperation (
+    int laneIndex) const noexcept
+{
+    return isValidPadIndex (laneIndex)
+        && undoSequenceLaneIndex.load() == laneIndex;
+}
+
+void SVDrummerAudioProcessor::undoSequenceLaneOperation (int laneIndex)
+{
+    if (! canUndoSequenceLaneOperation (laneIndex))
+        return;
+
+    const auto state = undoSequenceLane;
+    undoSequenceLaneIndex.store (-1);
+    applySequenceLaneState (laneIndex, state);
+}
+
+void SVDrummerAudioProcessor::capturePatternPlaybackUndoState()
+{
+    for (int step = 0; step < maximumPatternPlaybackSteps; ++step)
+        undoPatternPlaybackSteps[static_cast<std::size_t> (step)] =
+            getPatternPlaybackStep (step);
+
+    undoPatternPlaybackAvailable.store (true);
+}
+
+void SVDrummerAudioProcessor::clearPatternPlaybackChain()
+{
+    capturePatternPlaybackUndoState();
+
+    for (auto& step : patternPlaybackSteps)
+        step.store (-1);
+
+    pendingPatternPlaybackSelection.store (-1);
+    patternPlaybackSwitchPending.store (false);
+    activePatternPlaybackStep.store (-1);
+    patternTimelineResetCounter.fetch_add (1);
+    markPortableSettingsDirty();
+}
+
+bool SVDrummerAudioProcessor::canUndoPatternPlaybackChain() const noexcept
+{
+    return undoPatternPlaybackAvailable.load();
+}
+
+void SVDrummerAudioProcessor::undoPatternPlaybackChain()
+{
+    if (! canUndoPatternPlaybackChain())
+        return;
+
+    for (int step = 0; step < maximumPatternPlaybackSteps; ++step)
+        patternPlaybackSteps[static_cast<std::size_t> (step)].store (
+            undoPatternPlaybackSteps[static_cast<std::size_t> (step)]);
+
+    pendingPatternPlaybackSelection.store (-1);
+    patternPlaybackSwitchPending.store (false);
+    undoPatternPlaybackAvailable.store (false);
+    activePatternPlaybackStep.store (-1);
+    patternTimelineResetCounter.fetch_add (1);
+    markPortableSettingsDirty();
+}
+
 int SVDrummerAudioProcessor::getCurrentPatternIndex() const
 {
     return currentPatternIndex.load();
@@ -1918,10 +5295,93 @@ std::uint64_t SVDrummerAudioProcessor::getPatternChangeRevision() const
     return patternChangeCounter.load();
 }
 
+double SVDrummerAudioProcessor::getNextPatternSyncBoundary (
+    double requestPpq) const noexcept
+{
+    const auto mode = getPatternSyncMode();
+
+    if (mode == PatternSyncMode::played)
+        return requestPpq;
+
+    const double quantum = mode == PatternSyncMode::bar ? 4.0 : 1.0;
+    return std::ceil (requestPpq / quantum - 1.0e-9) * quantum;
+}
+
+void SVDrummerAudioProcessor::queueSyncedPatternSelection (
+    int patternIndex, int gateNote, double requestPpq)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return;
+
+    queuedSyncedPatternGateNote.store (gateNote);
+    queuedSyncedPatternBoundaryPpq.store (
+        getNextPatternSyncBoundary (requestPpq));
+    queuedSyncedPatternSelection.store (patternIndex);
+}
+
+void SVDrummerAudioProcessor::dispatchQueuedPatternSelection()
+{
+    const int patternIndex = queuedSyncedPatternSelection.exchange (-1);
+    const int gateNote = queuedSyncedPatternGateNote.exchange (-1);
+
+    if (! isValidPatternIndex (patternIndex))
+        return;
+
+    pendingPatternSelection.store (patternIndex);
+
+    if (gateNote >= 0)
+    {
+        activePatternGateNote.store (gateNote);
+        pendingPatternGateStartNote.store (gateNote);
+    }
+
+    triggerAsyncUpdate();
+}
+
+void SVDrummerAudioProcessor::serviceQueuedPatternSelection (
+    double blockStartPpq)
+{
+    if (queuedSyncedPatternSelection.load() < 0)
+        return;
+
+    if (! currentHostTransportPlaying.load()
+        || ! currentHostPpqAvailable.load()
+        || blockStartPpq + 1.0e-9
+               >= queuedSyncedPatternBoundaryPpq.load())
+        dispatchQueuedPatternSelection();
+}
+
 void SVDrummerAudioProcessor::selectPattern (int newPatternIndex)
 {
     if (! isValidPatternIndex (newPatternIndex))
         return;
+
+    if (newPatternIndex == currentPatternIndex.load())
+    {
+        queuedSyncedPatternSelection.store (-1);
+        queuedSyncedPatternGateNote.store (-1);
+        return;
+    }
+
+    if (getPatternSyncMode() != PatternSyncMode::played
+        && currentHostTransportPlaying.load()
+        && currentHostPpqAvailable.load())
+    {
+        queueSyncedPatternSelection (
+            newPatternIndex, -1, currentHostPpqPosition.load());
+        return;
+    }
+
+    selectPatternImmediately (newPatternIndex);
+}
+
+void SVDrummerAudioProcessor::selectPatternImmediately (int newPatternIndex)
+{
+    if (! isValidPatternIndex (newPatternIndex))
+        return;
+
+    pendingPatternPlaybackSelection.store (-1);
+    patternPlaybackSwitchPending.store (false);
 
     const int oldPatternIndex = currentPatternIndex.load();
 
@@ -2009,10 +5469,24 @@ void SVDrummerAudioProcessor::setPatternMidiNote (int patternIndex, int midiNote
 void SVDrummerAudioProcessor::handleAsyncUpdate()
 {
     const int requestedPattern = pendingPatternSelection.exchange (-1);
+    const int requestedPlaybackPattern =
+        pendingPatternPlaybackSelection.exchange (-1);
     const int requestedGateNote = pendingPatternGateStartNote.exchange (-1);
 
     if (isValidPatternIndex (requestedPattern))
-        selectPattern (requestedPattern);
+    {
+        patternPlaybackSwitchPending.store (false);
+        selectPatternImmediately (requestedPattern);
+    }
+    else if (isValidPatternIndex (requestedPlaybackPattern))
+    {
+        selectPatternFromPlaybackLane (requestedPlaybackPattern);
+        patternPlaybackSwitchPending.store (false);
+    }
+    else
+    {
+        patternPlaybackSwitchPending.store (false);
+    }
 
     if (getPatternMidiMode() != PatternMidiMode::select
         && requestedGateNote >= 0)
@@ -2058,6 +5532,7 @@ void SVDrummerAudioProcessor::captureCurrentPattern()
                 = static_cast<std::uint8_t> (getSequenceStepVelocity (laneIndex, step));
     }
 
+    refreshPatternPlaybackBars();
 }
 
 void SVDrummerAudioProcessor::capturePatternUndoState (int patternIndex)
@@ -2096,9 +5571,11 @@ void SVDrummerAudioProcessor::initialisePatternSlot (int patternIndex)
     }
 
     storedPatterns[static_cast<std::size_t> (patternIndex)] = std::move (newPattern);
+    refreshPatternPlaybackBars();
 }
 
-void SVDrummerAudioProcessor::applyStoredPattern (int patternIndex)
+void SVDrummerAudioProcessor::applyStoredPattern (
+    int patternIndex, bool restartTimeline)
 {
     if (! isValidPatternIndex (patternIndex))
         return;
@@ -2120,7 +5597,81 @@ void SVDrummerAudioProcessor::applyStoredPattern (int patternIndex)
                 sourceLane.stepVelocities[static_cast<std::size_t> (step)]);
     }
 
+    refreshPatternPlaybackBars();
     patternChangeCounter.fetch_add (1);
+
+    if (restartTimeline)
+        patternTimelineResetCounter.fetch_add (1);
+    else
+        patternPlaybackSwitchCounter.fetch_add (1);
+}
+
+void SVDrummerAudioProcessor::selectPatternFromPlaybackLane (int patternIndex)
+{
+    if (! isValidPatternIndex (patternIndex)
+        || ! sequencerEnabled.load()
+        || patternIndex == currentPatternIndex.load())
+        return;
+
+    captureCurrentPattern();
+
+    if (! storedPatterns[static_cast<std::size_t> (patternIndex)].assigned)
+        initialisePatternSlot (patternIndex);
+
+    currentPatternIndex.store (patternIndex);
+    applyStoredPattern (patternIndex, false);
+    markPortableSettingsDirty();
+}
+
+int SVDrummerAudioProcessor::getPatternBarsForPlayback (
+    int patternIndex) const noexcept
+{
+    if (! isValidPatternIndex (patternIndex))
+        return 1;
+
+    if (patternIndex == currentPatternIndex.load())
+        return juce::jlimit (1, maximumPatternBars, getPatternBars());
+
+    const int storedBars = patternPlaybackPatternBars[
+        static_cast<std::size_t> (patternIndex)].load();
+    return storedBars > 0
+             ? juce::jlimit (1, maximumPatternBars, storedBars)
+             : juce::jlimit (1, maximumPatternBars, getPatternBars());
+}
+
+void SVDrummerAudioProcessor::refreshPatternPlaybackBars()
+{
+    int longest = juce::jlimit (1, maximumPatternBars, getPatternBars());
+    const int current = currentPatternIndex.load();
+
+    for (int index = 0; index < numberOfPatterns; ++index)
+    {
+        if (index == current)
+        {
+            patternPlaybackPatternBars[static_cast<std::size_t> (index)].store (
+                juce::jlimit (1, maximumPatternBars, getPatternBars()));
+            continue;
+        }
+
+        const auto& stored = storedPatterns[static_cast<std::size_t> (index)];
+
+        if (stored.assigned)
+        {
+            const int bars = juce::jlimit (
+                1, maximumPatternBars, stored.bars);
+            patternPlaybackPatternBars[static_cast<std::size_t> (index)].store (
+                bars);
+            longest = juce::jmax (
+                longest, bars);
+        }
+        else
+        {
+            patternPlaybackPatternBars[static_cast<std::size_t> (index)].store (
+                0);
+        }
+    }
+
+    patternPlaybackBars.store (longest);
 }
 
 juce::String SVDrummerAudioProcessor::getSequencerDivisionName (int divisionIndex)
@@ -2133,6 +5684,51 @@ juce::String SVDrummerAudioProcessor::getSequencerDivisionName (int divisionInde
 
     return names[static_cast<std::size_t> (
         juce::jlimit (0, sequencerDivisionCount - 1, divisionIndex))];
+}
+
+juce::String SVDrummerAudioProcessor::getDelaySyncDivisionName (
+    int divisionIndex)
+{
+    static const std::array<juce::String, 12> names
+    {
+        "1", "1/2", "1/3", "1/4", "1/4T", "1/8", "1/8T",
+        "1/16", "1/16T", "1/32", "1/32T", "1/64"
+    };
+
+    return names[static_cast<std::size_t> (
+        juce::jlimit (0, static_cast<int> (names.size()) - 1,
+                      divisionIndex))];
+}
+
+juce::String SVDrummerAudioProcessor::getPadFilterTypeName (PadFilterType type)
+{
+    switch (type)
+    {
+        case PadFilterType::lowPass:  return "LPF";
+        case PadFilterType::bandPass: return "BPF";
+        case PadFilterType::highPass: return "HPF";
+        case PadFilterType::comb:     return "COMB";
+        case PadFilterType::formant:  return "FORMANT";
+        case PadFilterType::ladder:   return "LADDER";
+        case PadFilterType::notch:    return "NOTCH";
+        case PadFilterType::off:
+        default:                      return "OFF";
+    }
+}
+
+juce::String SVDrummerAudioProcessor::getPadFilterSlopeName (int slopeIndex)
+{
+    static const std::array<juce::String, 4> names
+    {
+        "6 dB", "12 dB", "24 dB", "48 dB"
+    };
+
+    return names[static_cast<std::size_t> (juce::jlimit (0, 3, slopeIndex))];
+}
+
+juce::String SVDrummerAudioProcessor::getPadLoopModeName (PadLoopMode mode)
+{
+    return mode == PadLoopMode::pingPong ? "PING-PONG" : "NORMAL";
 }
 
 int SVDrummerAudioProcessor::getSequencerStepsPerBar (int divisionIndex)
@@ -2160,14 +5756,30 @@ double SVDrummerAudioProcessor::getSequencerQuarterNotesPerStep (int divisionInd
 
 void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
 {
-    const auto currentPatternRevision = patternChangeCounter.load();
+    const auto currentTimelineResetRevision =
+        patternTimelineResetCounter.load();
+    const auto currentPlaybackSwitchRevision =
+        patternPlaybackSwitchCounter.load();
     const auto currentGateRestartRevision = patternGateRestartCounter.load();
     bool timelineNeedsReset = false;
+    bool patternPlaybackSwitched = false;
 
-    if (currentPatternRevision != lastPatternChangeCounter)
+    if (currentTimelineResetRevision != lastPatternTimelineResetCounter)
     {
-        lastPatternChangeCounter = currentPatternRevision;
+        lastPatternTimelineResetCounter = currentTimelineResetRevision;
         timelineNeedsReset = true;
+    }
+
+    if (currentPlaybackSwitchRevision != lastPatternPlaybackSwitchCounter)
+    {
+        lastPatternPlaybackSwitchCounter = currentPlaybackSwitchRevision;
+        patternPlaybackSwitched = true;
+        lastSequenceAbsoluteSteps.fill (
+            (std::numeric_limits<juce::int64>::min)());
+
+        if (patternPlaybackChainSlot >= 0)
+            patternPlaybackChainLengthQuarterNotes =
+                static_cast<double> (getPatternBars()) * 4.0;
     }
 
     if (currentGateRestartRevision != lastPatternGateRestartCounter)
@@ -2177,7 +5789,7 @@ void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
     }
 
     if (timelineNeedsReset && sequencerWasPlaying)
-        stopSequencerLoopVoicesOnAudioThread();
+        releaseSequencerVoicesOnAudioThread();
 
     if (timelineNeedsReset)
         resetSequencerTimeline();
@@ -2220,12 +5832,14 @@ void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
     {
         if (sequencerWasPlaying)
         {
-            stopSequencerLoopVoicesOnAudioThread();
+            releaseSequencerVoicesOnAudioThread();
             resetSequencerTimeline();
         }
 
         for (auto& lane : sequenceLanes)
             lane.activeStep.store (-1);
+
+        activePatternPlaybackStep.store (-1);
 
         if (! playbackRequested)
         {
@@ -2239,22 +5853,131 @@ void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
 
     const double quarterNotesPerSample = bpm / (60.0 * juce::jmax (1.0, currentSampleRate));
     const bool forceInitialTrigger = ! sequencerWasPlaying;
+    const bool patternChainConfigured =
+        isPatternPlaybackChainEnabled()
+        && isValidPatternIndex (getPatternPlaybackStep (0));
+    bool patternChainStopped = false;
+
+    if (! patternChainConfigured)
+    {
+        patternPlaybackChainSlot = -1;
+        patternPlaybackChainPositionQuarterNotes = 0.0;
+        patternPlaybackChainLengthQuarterNotes = 0.0;
+        activePatternPlaybackStep.store (-1);
+    }
+
+    const auto beginPatternChainSlot = [this] (int slot)
+    {
+        const int requestedPattern = getPatternPlaybackStep (slot);
+
+        if (! isValidPatternIndex (requestedPattern))
+            return false;
+
+        patternPlaybackChainSlot = slot;
+        patternPlaybackChainPositionQuarterNotes = 0.0;
+        patternPlaybackChainLengthQuarterNotes =
+            static_cast<double> (
+                getPatternBarsForPlayback (requestedPattern)) * 4.0;
+        activePatternPlaybackStep.store (slot);
+        lastSequenceAbsoluteSteps.fill (
+            (std::numeric_limits<juce::int64>::min)());
+        releaseSequencerVoicesOnAudioThread();
+
+        if (requestedPattern != currentPatternIndex.load())
+        {
+            pendingPatternPlaybackSelection.store (requestedPattern);
+            patternPlaybackSwitchPending.store (true);
+            triggerAsyncUpdate();
+        }
+
+        return true;
+    };
 
     for (int sample = 0; sample < numSamples; ++sample)
     {
-        const double ppq = blockStartPpq
-                         + static_cast<double> (sample) * quarterNotesPerSample;
+        const double hostPpq = blockStartPpq
+                             + static_cast<double> (sample)
+                                   * quarterNotesPerSample;
+        double sequencePpq = hostPpq;
+        bool forceLaneTrigger =
+            (forceInitialTrigger || patternPlaybackSwitched) && sample == 0;
+
+        if (patternChainConfigured)
+        {
+            bool beganNewSlot = false;
+
+            if (patternPlaybackChainSlot < 0)
+            {
+                beganNewSlot = beginPatternChainSlot (0);
+            }
+            else if (! patternPlaybackSwitchPending.load()
+                     && patternPlaybackChainPositionQuarterNotes + 1.0e-10
+                            >= patternPlaybackChainLengthQuarterNotes)
+            {
+                int nextSlot = patternPlaybackChainSlot + 1;
+                const bool reachedChainEnd =
+                    nextSlot >= maximumPatternPlaybackSteps
+                    || ! isValidPatternIndex (
+                        getPatternPlaybackStep (nextSlot));
+
+                if (reachedChainEnd
+                    && isPatternPlaybackLoopEnabled()
+                    && isValidPatternIndex (getPatternPlaybackStep (0)))
+                {
+                    nextSlot = 0;
+                }
+                else if (reachedChainEnd)
+                {
+                    sequencerEnabled.store (false);
+                    releaseSequencerVoicesOnAudioThread();
+
+                    for (auto& lane : sequenceLanes)
+                        lane.activeStep.store (-1);
+
+                    activePatternPlaybackStep.store (-1);
+                    patternPlaybackChainSlot = -1;
+                    patternPlaybackChainPositionQuarterNotes = 0.0;
+                    patternPlaybackChainLengthQuarterNotes = 0.0;
+                    sequencerPatternPositionQuarterNotes.store (0.0);
+                    patternChainStopped = true;
+                    markPortableSettingsDirty();
+                    break;
+                }
+
+                beganNewSlot = beginPatternChainSlot (nextSlot);
+            }
+
+            forceLaneTrigger = forceLaneTrigger || beganNewSlot;
+
+            if (patternPlaybackSwitchPending.load())
+                continue;
+
+            sequencePpq = patternPlaybackChainPositionQuarterNotes;
+        }
+
+        if (patternPlaybackSwitchPending.load())
+            continue;
 
         for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
         {
             auto& lane = sequenceLanes[static_cast<std::size_t> (laneIndex)];
             const double stepLength = getSequencerQuarterNotesPerStep (lane.division.load());
             const auto absoluteStep = static_cast<juce::int64> (
-                std::floor ((ppq + 1.0e-10) / stepLength));
+                std::floor ((sequencePpq + 1.0e-10) / stepLength));
             auto& lastStep = lastSequenceAbsoluteSteps[static_cast<std::size_t> (laneIndex)];
 
-            if (! (forceInitialTrigger && sample == 0) && absoluteStep == lastStep)
+            if (! forceLaneTrigger && absoluteStep == lastStep)
                 continue;
+
+            const bool hadPreviousStep = lastStep
+                != (std::numeric_limits<juce::int64>::min)();
+
+            if (hadPreviousStep
+                && pads[static_cast<std::size_t> (laneIndex)]
+                       .sequencerGated.load())
+            {
+                schedulePadSequencerGateRelease (laneIndex, sample);
+            }
 
             lastStep = absoluteStep;
             const int loopLength = juce::jmax (1, lane.loopLength.load());
@@ -2271,6 +5994,15 @@ void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
                                          sample,
                                          true);
         }
+
+        if (patternChainConfigured)
+            patternPlaybackChainPositionQuarterNotes += quarterNotesPerSample;
+    }
+
+    if (patternChainStopped)
+    {
+        sequencerWasPlaying = false;
+        return;
     }
 
     const double blockEndPpq = blockStartPpq
@@ -2279,11 +6011,17 @@ void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
                                                               + static_cast<double> (numSamples)
                                                                     * quarterNotesPerSample;
 
-    const double patternLength = static_cast<double> (getPatternBars()) * 4.0;
-    double patternPosition = std::fmod (blockEndPpq, patternLength);
+    double patternPosition = patternPlaybackChainPositionQuarterNotes;
 
-    if (patternPosition < 0.0)
-        patternPosition += patternLength;
+    if (! patternChainConfigured)
+    {
+        const double patternLength =
+            static_cast<double> (getPatternBars()) * 4.0;
+        patternPosition = std::fmod (blockEndPpq, patternLength);
+
+        if (patternPosition < 0.0)
+            patternPosition += patternLength;
+    }
 
     sequencerPatternPositionQuarterNotes.store (patternPosition);
     sequencerWasPlaying = true;
@@ -2292,11 +6030,16 @@ void SVDrummerAudioProcessor::processSequencerTriggers (int numSamples)
 void SVDrummerAudioProcessor::resetSequencerTimeline()
 {
     lastSequenceAbsoluteSteps.fill ((std::numeric_limits<juce::int64>::min)());
+    patternPlaybackChainSlot = -1;
+    patternPlaybackChainPositionQuarterNotes = 0.0;
+    patternPlaybackChainLengthQuarterNotes = 0.0;
     fallbackSequencerPpq = 0.0;
     sequencerWasPlaying = false;
 
     for (auto& lane : sequenceLanes)
         lane.activeStep.store (-1);
+
+    activePatternPlaybackStep.store (-1);
 }
 
 juce::StringArray SVDrummerAudioProcessor::getBrowserFolders() const
@@ -2359,12 +6102,22 @@ void SVDrummerAudioProcessor::setEditorSelectedPad (int padIndex) noexcept
 
 bool SVDrummerAudioProcessor::isEditorShowingPadSettings() const noexcept
 {
-    return editorShowingPadSettings.load();
+    return getEditorViewIndex() == 1;
 }
 
 void SVDrummerAudioProcessor::setEditorShowingPadSettings (bool shouldShow) noexcept
 {
-    editorShowingPadSettings.store (shouldShow);
+    setEditorViewIndex (shouldShow ? 1 : 0);
+}
+
+int SVDrummerAudioProcessor::getEditorViewIndex() const noexcept
+{
+    return juce::jlimit (0, 2, editorViewIndex.load());
+}
+
+void SVDrummerAudioProcessor::setEditorViewIndex (int viewIndex) noexcept
+{
+    editorViewIndex.store (juce::jlimit (0, 2, viewIndex));
 }
 
 SVDrummerAudioProcessor::BrowserMode
@@ -2486,6 +6239,74 @@ juce::File SVDrummerAudioProcessor::resolveStoredPath (const juce::String& store
     return juce::File (storedPath);
 }
 
+std::unique_ptr<juce::XmlElement>
+SVDrummerAudioProcessor::createGlobalFxXml() const
+{
+    auto xml = std::make_unique<juce::XmlElement> ("GLOBAL_FX");
+    xml->setAttribute ("delayEnabled", isGlobalDelayEnabled());
+    xml->setAttribute ("delaySyncEnabled", isGlobalDelaySyncEnabled());
+    xml->setAttribute ("delaySyncDivision", getGlobalDelaySyncDivision());
+    xml->setAttribute ("delayTimeMs",
+                       static_cast<double> (getGlobalDelayTimeMs()));
+    xml->setAttribute ("delayFeedback",
+                       static_cast<double> (getGlobalDelayFeedback()));
+    xml->setAttribute ("delayMix",
+                       static_cast<double> (getGlobalDelayMix()));
+    xml->setAttribute ("reverbEnabled", isGlobalReverbEnabled());
+    xml->setAttribute ("reverbSize",
+                       static_cast<double> (getGlobalReverbSize()));
+    xml->setAttribute ("reverbDamping",
+                       static_cast<double> (getGlobalReverbDamping()));
+    xml->setAttribute ("reverbWidth",
+                       static_cast<double> (getGlobalReverbWidth()));
+    xml->setAttribute ("reverbMix",
+                       static_cast<double> (getGlobalReverbMix()));
+    return xml;
+}
+
+void SVDrummerAudioProcessor::loadGlobalFxXml (
+    const juce::XmlElement* globalFxXml)
+{
+    if (globalFxXml == nullptr || ! globalFxXml->hasTagName ("GLOBAL_FX"))
+    {
+        setGlobalDelayEnabled (false);
+        setGlobalDelaySyncEnabled (false);
+        setGlobalDelaySyncDivision (5);
+        setGlobalDelayTimeMs (250.0f);
+        setGlobalDelayFeedback (0.35f);
+        setGlobalDelayMix (0.25f);
+        setGlobalReverbEnabled (false);
+        setGlobalReverbSize (0.50f);
+        setGlobalReverbDamping (0.50f);
+        setGlobalReverbWidth (1.0f);
+        setGlobalReverbMix (0.20f);
+        return;
+    }
+
+    setGlobalDelayEnabled (
+        globalFxXml->getBoolAttribute ("delayEnabled", false));
+    setGlobalDelaySyncEnabled (
+        globalFxXml->getBoolAttribute ("delaySyncEnabled", false));
+    setGlobalDelaySyncDivision (
+        globalFxXml->getIntAttribute ("delaySyncDivision", 5));
+    setGlobalDelayTimeMs (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("delayTimeMs", 250.0)));
+    setGlobalDelayFeedback (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("delayFeedback", 0.35)));
+    setGlobalDelayMix (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("delayMix", 0.25)));
+    setGlobalReverbEnabled (
+        globalFxXml->getBoolAttribute ("reverbEnabled", false));
+    setGlobalReverbSize (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("reverbSize", 0.50)));
+    setGlobalReverbDamping (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("reverbDamping", 0.50)));
+    setGlobalReverbWidth (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("reverbWidth", 1.0)));
+    setGlobalReverbMix (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("reverbMix", 0.20)));
+}
+
 std::unique_ptr<juce::XmlElement> SVDrummerAudioProcessor::createKitXml() const
 {
     auto xml = std::make_unique<juce::XmlElement> ("SVDRUMMER_KIT");
@@ -2505,14 +6326,49 @@ std::unique_ptr<juce::XmlElement> SVDrummerAudioProcessor::createKitXml() const
         padXml->setAttribute ("volumeDb", static_cast<double> (pad.volumeDb.load()));
         padXml->setAttribute ("pan", static_cast<double> (pad.pan.load()));
         padXml->setAttribute ("tune", static_cast<double> (pad.tuneSemitones.load()));
+        padXml->setAttribute ("outputBus", pad.outputBus.load());
         padXml->setAttribute ("chokeGroup", pad.chokeGroup.load());
+        padXml->setAttribute ("ampCurve", static_cast<double> (
+            pad.ampCurve.load()));
         padXml->setAttribute ("ampAttackMs", static_cast<double> (pad.ampAttackMs.load()));
         padXml->setAttribute ("ampDecayMs", static_cast<double> (pad.ampDecayMs.load()));
         padXml->setAttribute ("ampSustain", static_cast<double> (pad.ampSustain.load()));
         padXml->setAttribute ("ampReleaseMs", static_cast<double> (pad.ampReleaseMs.load()));
+        padXml->setAttribute ("filterCutoffHz", static_cast<double> (
+            pad.filterCutoffHz.load()));
+        padXml->setAttribute ("filterResonance", static_cast<double> (
+            pad.filterResonance.load()));
+        padXml->setAttribute ("filterDriveDb", static_cast<double> (
+            pad.filterDriveDb.load()));
+        padXml->setAttribute ("filterEnabled", pad.filterEnabled.load());
+        padXml->setAttribute ("filterType", pad.filterType.load());
+        padXml->setAttribute ("filterSlope", pad.filterSlope.load());
+        padXml->setAttribute ("highPassCutoffHz", static_cast<double> (
+            pad.highPassCutoffHz.load()));
+        padXml->setAttribute ("compressorEnabled",
+                              pad.compressorEnabled.load());
+        padXml->setAttribute ("compressorThresholdDb", static_cast<double> (
+            pad.compressorThresholdDb.load()));
+        padXml->setAttribute ("compressorRatio", static_cast<double> (
+            pad.compressorRatio.load()));
+        padXml->setAttribute ("compressorAttackMs", static_cast<double> (
+            pad.compressorAttackMs.load()));
+        padXml->setAttribute ("compressorReleaseMs", static_cast<double> (
+            pad.compressorReleaseMs.load()));
+        padXml->setAttribute ("compressorKneeDb", static_cast<double> (
+            pad.compressorKneeDb.load()));
+        padXml->setAttribute ("saturationAmount", static_cast<double> (
+            pad.saturationAmount.load()));
+        padXml->setAttribute ("saturationHardClip", static_cast<double> (
+            pad.saturationHardClipAmount.load()));
+        padXml->setAttribute ("saturationEnabled",
+                              pad.saturationEnabled.load());
         padXml->setAttribute ("startSample", pad.sampleStart.load());
         padXml->setAttribute ("endSample", pad.sampleEnd.load());
         padXml->setAttribute ("loopEnabled", pad.loopEnabled.load());
+        padXml->setAttribute ("loopMode", pad.loopMode.load());
+        padXml->setAttribute ("sequencerGated",
+                              pad.sequencerGated.load());
         padXml->setAttribute ("loopStartSample", pad.loopStart.load());
         padXml->setAttribute ("loopEndSample", pad.loopEnd.load());
         padXml->setAttribute ("sample", pad.samplePath.isNotEmpty()
@@ -2556,8 +6412,14 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
         pad.tuneSemitones = juce::jlimit (
             -24.0f, 24.0f,
             static_cast<float> (item->getDoubleAttribute ("tune", 0.0)));
+        pad.outputBus = juce::jlimit (
+            0, numberOfPadOutputBuses,
+            item->getIntAttribute ("outputBus", 0));
         pad.chokeGroup = juce::jlimit (
             0, numberOfPads, item->getIntAttribute ("chokeGroup", 0));
+        pad.ampCurve = juce::jlimit (
+            -1.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute ("ampCurve", 0.0)));
         pad.ampAttackMs = juce::jlimit (
             0.0f, 2000.0f,
             static_cast<float> (item->getDoubleAttribute ("ampAttackMs", 0.0)));
@@ -2570,7 +6432,65 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
         pad.ampReleaseMs = juce::jlimit (
             0.0f, 5000.0f,
             static_cast<float> (item->getDoubleAttribute ("ampReleaseMs", 0.0)));
+        pad.filterCutoffHz = juce::jlimit (
+            20.0f, 20000.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "filterCutoffHz", 20000.0)));
+        pad.filterResonance = juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "filterResonance", 0.0)));
+        pad.filterDriveDb = juce::jlimit (
+            0.0f, 24.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "filterDriveDb", 0.0)));
+        pad.filterEnabled = item->getBoolAttribute (
+            "filterEnabled", false);
+        pad.filterType = juce::jlimit (
+            1, 7, item->getIntAttribute ("filterType", 1));
+        pad.filterSlope = juce::jlimit (
+            0, 3, item->getIntAttribute ("filterSlope", 1));
+        pad.highPassCutoffHz = juce::jlimit (
+            0.0f, 2000.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "highPassCutoffHz", 0.0)));
+        pad.compressorEnabled = item->getBoolAttribute (
+            "compressorEnabled", false);
+        pad.compressorThresholdDb = juce::jlimit (
+            -60.0f, 0.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorThresholdDb", -18.0)));
+        pad.compressorRatio = juce::jlimit (
+            1.0f, 20.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorRatio", 4.0)));
+        pad.compressorAttackMs = juce::jlimit (
+            0.1f, 100.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorAttackMs", 10.0)));
+        pad.compressorReleaseMs = juce::jlimit (
+            10.0f, 1000.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorReleaseMs", 100.0)));
+        pad.compressorKneeDb = juce::jlimit (
+            0.0f, 24.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorKneeDb", 6.0)));
+        pad.saturationAmount = juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "saturationAmount", 0.0)));
+        pad.saturationHardClipAmount = juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "saturationHardClip", 0.0)));
+        pad.saturationEnabled = item->getBoolAttribute (
+            "saturationEnabled", false);
         pad.loopEnabled = item->getBoolAttribute ("loopEnabled", false);
+        pad.loopMode = juce::jlimit (
+            0, 1, item->getIntAttribute ("loopMode", 0));
+        pad.sequencerGated = item->getBoolAttribute (
+            "sequencerGated", false);
 
         const bool hasSavedStart = item->hasAttribute ("startSample");
         const bool hasSavedEnd = item->hasAttribute ("endSample");
@@ -2653,14 +6573,35 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
         targetPad.volumeDb.store (sourcePad.volumeDb);
         targetPad.pan.store (sourcePad.pan);
         targetPad.tuneSemitones.store (sourcePad.tuneSemitones);
+        targetPad.outputBus.store (sourcePad.outputBus);
         targetPad.chokeGroup.store (sourcePad.chokeGroup);
+        targetPad.ampCurve.store (sourcePad.ampCurve);
         targetPad.ampAttackMs.store (sourcePad.ampAttackMs);
         targetPad.ampDecayMs.store (sourcePad.ampDecayMs);
         targetPad.ampSustain.store (sourcePad.ampSustain);
         targetPad.ampReleaseMs.store (sourcePad.ampReleaseMs);
+        targetPad.filterCutoffHz.store (sourcePad.filterCutoffHz);
+        targetPad.filterResonance.store (sourcePad.filterResonance);
+        targetPad.filterDriveDb.store (sourcePad.filterDriveDb);
+        targetPad.filterEnabled.store (sourcePad.filterEnabled);
+        targetPad.filterType.store (sourcePad.filterType);
+        targetPad.filterSlope.store (sourcePad.filterSlope);
+        targetPad.highPassCutoffHz.store (sourcePad.highPassCutoffHz);
+        targetPad.compressorEnabled.store (sourcePad.compressorEnabled);
+        targetPad.compressorThresholdDb.store (sourcePad.compressorThresholdDb);
+        targetPad.compressorRatio.store (sourcePad.compressorRatio);
+        targetPad.compressorAttackMs.store (sourcePad.compressorAttackMs);
+        targetPad.compressorReleaseMs.store (sourcePad.compressorReleaseMs);
+        targetPad.compressorKneeDb.store (sourcePad.compressorKneeDb);
+        targetPad.saturationAmount.store (sourcePad.saturationAmount);
+        targetPad.saturationHardClipAmount.store (
+            sourcePad.saturationHardClipAmount);
+        targetPad.saturationEnabled.store (sourcePad.saturationEnabled);
         targetPad.sampleStart.store (sourcePad.sampleStart);
         targetPad.sampleEnd.store (sourcePad.sampleEnd);
         targetPad.loopEnabled.store (sourcePad.loopEnabled);
+        targetPad.loopMode.store (sourcePad.loopMode);
+        targetPad.sequencerGated.store (sourcePad.sequencerGated);
         targetPad.loopStart.store (sourcePad.loopStart);
         targetPad.loopEnd.store (sourcePad.loopEnd);
     }
@@ -2762,9 +6703,16 @@ std::unique_ptr<juce::XmlElement>
 SVDrummerAudioProcessor::createPatternSetXml() const
 {
     auto xml = std::make_unique<juce::XmlElement> ("SVDRUMMER_PATTERN_SET");
-    xml->setAttribute ("version", "1.0");
+    xml->setAttribute ("version", "1.3");
     xml->setAttribute ("type", "pattern-set");
     xml->setAttribute ("current", getCurrentPatternIndex());
+
+    auto* playbackXml = xml->createNewChildElement ("PATTERN_PLAYBACK");
+    playbackXml->setAttribute ("steps", encodePatternPlaybackSteps());
+    playbackXml->setAttribute (
+        "enabled", isPatternPlaybackChainEnabled());
+    playbackXml->setAttribute (
+        "loop", isPatternPlaybackLoopEnabled());
 
     for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
     {
@@ -2857,9 +6805,25 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetXml (
         || patternSetXml.getStringAttribute ("type") != "pattern-set")
         return juce::Result::fail ("This is not an SV-Drummer pattern-set file.");
 
+    pendingPatternPlaybackSelection.store (-1);
+    patternPlaybackSwitchPending.store (false);
+
     std::array<StoredPattern, numberOfPatterns> loadedPatterns;
     std::array<int, numberOfPatterns> loadedMidiNotes;
     loadedMidiNotes.fill (-1);
+    const auto encodedPlaybackSteps =
+        patternSetXml.getChildByName ("PATTERN_PLAYBACK") != nullptr
+            ? patternSetXml.getChildByName ("PATTERN_PLAYBACK")
+                  ->getStringAttribute ("steps")
+            : juce::String();
+    const bool loadedPlaybackLoop =
+        patternSetXml.getChildByName ("PATTERN_PLAYBACK") != nullptr
+            && patternSetXml.getChildByName ("PATTERN_PLAYBACK")
+                   ->getBoolAttribute ("loop", false);
+    const bool loadedPlaybackEnabled =
+        patternSetXml.getChildByName ("PATTERN_PLAYBACK") == nullptr
+            || patternSetXml.getChildByName ("PATTERN_PLAYBACK")
+                   ->getBoolAttribute ("enabled", true);
 
     for (int index = 0; index < numberOfPatterns; ++index)
         loadedPatterns[static_cast<std::size_t> (index)].name
@@ -2894,6 +6858,9 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetXml (
 
     storedPatterns = std::move (loadedPatterns);
     undoPatternIndex.store (-1);
+    decodePatternPlaybackSteps (encodedPlaybackSteps);
+    patternPlaybackChainEnabled.store (loadedPlaybackEnabled);
+    patternPlaybackLoopEnabled.store (loadedPlaybackLoop);
 
     for (int index = 0; index < numberOfPatterns; ++index)
         patternMidiNotes[static_cast<std::size_t> (index)].store (
@@ -2920,6 +6887,7 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetXml (
 
     currentPatternIndex.store (restoredPattern);
     applyStoredPattern (restoredPattern);
+    refreshPatternPlaybackBars();
     return juce::Result::ok();
 }
 
@@ -2966,6 +6934,8 @@ juce::Result SVDrummerAudioProcessor::loadPatternIntoSlot (
 
     if (patternIndex == currentPatternIndex.load())
         applyStoredPattern (patternIndex);
+    else
+        refreshPatternPlaybackBars();
 
     markPortableSettingsDirty();
     return juce::Result::ok();
@@ -3015,6 +6985,8 @@ void SVDrummerAudioProcessor::pastePatternSlot (int patternIndex)
 
     if (patternIndex == currentPatternIndex.load())
         applyStoredPattern (patternIndex);
+    else
+        refreshPatternPlaybackBars();
 
     markPortableSettingsDirty();
 }
@@ -3115,12 +7087,18 @@ void SVDrummerAudioProcessor::undoPatternOperation (int patternIndex)
 
     if (patternIndex == currentPatternIndex.load())
         applyStoredPattern (patternIndex);
+    else
+        refreshPatternPlaybackBars();
 
     markPortableSettingsDirty();
 }
 
 bool SVDrummerAudioProcessor::patternSetHasSteps() const
 {
+    for (int step = 0; step < maximumPatternPlaybackSteps; ++step)
+        if (getPatternPlaybackStep (step) >= 0)
+            return true;
+
     for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
         if (patternHasSteps (patternIndex))
             return true;
@@ -3157,7 +7135,12 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetFromFile (
     const auto result = loadPatternSetXml (*xml);
 
     if (result.wasOk())
+    {
+        // Loading a library Pattern Set must always leave transport stopped.
+        // This also clears any pending GATE or HOLD trigger state.
+        stopPatternMidiPlayback();
         markPortableSettingsDirty();
+    }
 
     return result;
 }
@@ -3172,8 +7155,9 @@ juce::Result SVDrummerAudioProcessor::saveProjectToFile (
     const auto midiMode = getPatternMidiMode();
     projectXml->setAttribute ("midiMode", patternMidiModeToString (midiMode));
     projectXml->setAttribute (
-        "sequencerEnabled",
-        midiMode == PatternMidiMode::select && isSequencerEnabled());
+        "syncMode", patternSyncModeToString (getPatternSyncMode()));
+    // Project files store the setup, not a command to begin playback.
+    projectXml->setAttribute ("sequencerEnabled", false);
     projectXml->setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     if (auto kitXml = createKitXml())
@@ -3181,6 +7165,9 @@ juce::Result SVDrummerAudioProcessor::saveProjectToFile (
 
     if (auto patternSetXml = createPatternSetXml())
         projectXml->addChildElement (patternSetXml.release());
+
+    if (auto globalFxXml = createGlobalFxXml())
+        projectXml->addChildElement (globalFxXml.release());
 
     if (file.getParentDirectory().createDirectory().failed())
         return juce::Result::fail ("The Projects folder could not be created.");
@@ -3206,6 +7193,7 @@ juce::Result SVDrummerAudioProcessor::loadProjectFromFile (
 
     auto* kitXml = projectXml->getChildByName ("SVDRUMMER_KIT");
     auto* patternSetXml = projectXml->getChildByName ("SVDRUMMER_PATTERN_SET");
+    auto* globalFxXml = projectXml->getChildByName ("GLOBAL_FX");
 
     if (kitXml == nullptr || patternSetXml == nullptr)
         return juce::Result::fail (
@@ -3224,16 +7212,20 @@ juce::Result SVDrummerAudioProcessor::loadProjectFromFile (
     if (kitResult.failed())
         return kitResult;
 
+    loadGlobalFxXml (globalFxXml);
+
     // A Project and its samples are often moved together. Try the Project
     // folder first so those samples can be restored without prompting.
     relinkMissingSamplesFromFolder (file.getParentDirectory(), false);
 
     const auto midiMode = patternMidiModeFromString (
-        projectXml->getStringAttribute ("midiMode", "Select"));
+        projectXml->getStringAttribute ("midiMode", "Manual"));
     setPatternMidiMode (midiMode);
-    setSequencerEnabled (
-        midiMode == PatternMidiMode::select
-        && projectXml->getBoolAttribute ("sequencerEnabled", false));
+    setPatternSyncMode (patternSyncModeFromString (
+        projectXml->getStringAttribute ("syncMode", "Played")));
+    // Deliberately ignore the legacy sequencerEnabled value. Loading any
+    // Project must leave transport stopped, including a file saved with "1".
+    stopPatternMidiPlayback();
     setSampleMarkerSnapEnabled (
         projectXml->getBoolAttribute ("markerSnap", false));
     markPortableSettingsDirty();
@@ -3405,6 +7397,53 @@ void SVDrummerAudioProcessor::decodeLaneSteps (int laneIndex,
         if (step >= 0 && step < maximumStepsPerLane)
             lane.stepVelocities[static_cast<std::size_t> (step)].store (
                 static_cast<std::uint8_t> (juce::jlimit (0, 127, velocity)));
+    }
+}
+
+juce::String SVDrummerAudioProcessor::encodePatternPlaybackSteps() const
+{
+    juce::String encoded;
+
+    for (int step = 0; step < maximumPatternPlaybackSteps; ++step)
+    {
+        const int patternIndex = getPatternPlaybackStep (step);
+
+        if (! isValidPatternIndex (patternIndex))
+            continue;
+
+        if (encoded.isNotEmpty())
+            encoded << ";";
+
+        encoded << step << ":" << patternIndex + 1;
+    }
+
+    return encoded;
+}
+
+void SVDrummerAudioProcessor::decodePatternPlaybackSteps (
+    const juce::String& encodedSteps)
+{
+    for (auto& step : patternPlaybackSteps)
+        step.store (-1);
+
+    juce::StringArray entries;
+    entries.addTokens (encodedSteps, ";", {});
+
+    for (const auto& entry : entries)
+    {
+        const int separator = entry.indexOfChar (':');
+
+        if (separator <= 0)
+            continue;
+
+        const int step = entry.substring (0, separator).getIntValue();
+        const int patternIndex =
+            entry.substring (separator + 1).getIntValue() - 1;
+
+        if (step >= 0 && step < maximumPatternPlaybackSteps
+            && isValidPatternIndex (patternIndex))
+            patternPlaybackSteps[static_cast<std::size_t> (step)].store (
+                patternIndex);
     }
 }
 
@@ -3588,12 +7627,14 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "5.0.0");
+    state.setAttribute ("version", "9.11.0");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     auto* sequencer = state.createNewChildElement ("SEQUENCER");
     const auto midiMode = getPatternMidiMode();
     sequencer->setAttribute ("midiMode", patternMidiModeToString (midiMode));
+    sequencer->setAttribute (
+        "syncMode", patternSyncModeToString (getPatternSyncMode()));
     sequencer->setAttribute ("enabled",
                              midiMode == PatternMidiMode::select
                                  && isSequencerEnabled());
@@ -3619,14 +7660,52 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         item->setAttribute ("volumeDb", static_cast<double> (getPadVolumeDb (padIndex)));
         item->setAttribute ("pan", static_cast<double> (getPadPan (padIndex)));
         item->setAttribute ("tune", static_cast<double> (getPadTuneSemitones (padIndex)));
+        item->setAttribute ("outputBus", getPadOutputBus (padIndex));
         item->setAttribute ("chokeGroup", getPadChokeGroup (padIndex));
+        item->setAttribute ("ampCurve", static_cast<double> (
+            getPadAmpCurve (padIndex)));
         item->setAttribute ("ampAttackMs", static_cast<double> (getPadAmpAttackMs (padIndex)));
         item->setAttribute ("ampDecayMs", static_cast<double> (getPadAmpDecayMs (padIndex)));
         item->setAttribute ("ampSustain", static_cast<double> (getPadAmpSustain (padIndex)));
         item->setAttribute ("ampReleaseMs", static_cast<double> (getPadAmpReleaseMs (padIndex)));
+        item->setAttribute ("filterCutoffHz", static_cast<double> (
+            getPadFilterCutoffHz (padIndex)));
+        item->setAttribute ("filterResonance", static_cast<double> (
+            getPadFilterResonance (padIndex)));
+        item->setAttribute ("filterDriveDb", static_cast<double> (
+            getPadFilterDriveDb (padIndex)));
+        item->setAttribute ("filterEnabled", isPadFilterEnabled (padIndex));
+        item->setAttribute ("filterType", static_cast<int> (
+            getPadFilterType (padIndex)));
+        item->setAttribute ("filterSlope",
+                            getPadFilterSlopeIndex (padIndex));
+        item->setAttribute ("highPassCutoffHz", static_cast<double> (
+            getPadHighPassCutoffHz (padIndex)));
+        item->setAttribute ("compressorEnabled",
+                            isPadCompressorEnabled (padIndex));
+        item->setAttribute ("compressorThresholdDb", static_cast<double> (
+            getPadCompressorThresholdDb (padIndex)));
+        item->setAttribute ("compressorRatio", static_cast<double> (
+            getPadCompressorRatio (padIndex)));
+        item->setAttribute ("compressorAttackMs", static_cast<double> (
+            getPadCompressorAttackMs (padIndex)));
+        item->setAttribute ("compressorReleaseMs", static_cast<double> (
+            getPadCompressorReleaseMs (padIndex)));
+        item->setAttribute ("compressorKneeDb", static_cast<double> (
+            getPadCompressorKneeDb (padIndex)));
+        item->setAttribute ("saturationAmount", static_cast<double> (
+            getPadSaturationAmount (padIndex)));
+        item->setAttribute ("saturationHardClip", static_cast<double> (
+            getPadSaturationHardClipAmount (padIndex)));
+        item->setAttribute ("saturationEnabled",
+                            isPadSaturationEnabled (padIndex));
         item->setAttribute ("startSample", getPadSampleStart (padIndex));
         item->setAttribute ("endSample", getPadSampleEnd (padIndex));
         item->setAttribute ("loopEnabled", isPadLoopEnabled (padIndex));
+        item->setAttribute (
+            "loopMode", static_cast<int> (getPadLoopMode (padIndex)));
+        item->setAttribute ("sequencerGated",
+                            isPadSequencerGated (padIndex));
         item->setAttribute ("loopStartSample", getPadLoopStart (padIndex));
         item->setAttribute ("loopEndSample", getPadLoopEnd (padIndex));
 
@@ -3638,6 +7717,13 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 
     auto* patternsXml = state.createNewChildElement ("PATTERNS");
     patternsXml->setAttribute ("current", getCurrentPatternIndex());
+    auto* playbackXml = patternsXml->createNewChildElement (
+        "PATTERN_PLAYBACK");
+    playbackXml->setAttribute ("steps", encodePatternPlaybackSteps());
+    playbackXml->setAttribute (
+        "enabled", isPatternPlaybackChainEnabled());
+    playbackXml->setAttribute (
+        "loop", isPatternPlaybackLoopEnabled());
 
     for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
     {
@@ -3651,6 +7737,9 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
                 slotXml->addChildElement (patternXml.release());
     }
 
+    if (auto globalFxXml = createGlobalFxXml())
+        state.addChildElement (globalFxXml.release());
+
     copyXmlToBinary (state, destData);
 }
 
@@ -3662,6 +7751,11 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
         return;
 
     restoringHostState.store (true);
+    pendingPatternSelection.store (-1);
+    queuedSyncedPatternSelection.store (-1);
+    queuedSyncedPatternGateNote.store (-1);
+    pendingPatternPlaybackSelection.store (-1);
+    patternPlaybackSwitchPending.store (false);
 
     sampleMarkerSnapEnabled.store (
         state->getBoolAttribute ("markerSnap", false));
@@ -3669,7 +7763,9 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
     if (auto* sequencer = state->getChildByName ("SEQUENCER"))
     {
         patternMidiMode.store (static_cast<int> (patternMidiModeFromString (
-            sequencer->getStringAttribute ("midiMode", "Select"))));
+            sequencer->getStringAttribute ("midiMode", "Manual"))));
+        patternSyncMode.store (static_cast<int> (patternSyncModeFromString (
+            sequencer->getStringAttribute ("syncMode", "Played"))));
         sequencerEnabled.store (
             getPatternMidiMode() == PatternMidiMode::select
             && sequencer->getBoolAttribute ("enabled", false));
@@ -3718,8 +7814,14 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
             -1.0f, 1.0f, static_cast<float> (item->getDoubleAttribute ("pan", 0.0))));
         pad.tuneSemitones.store (juce::jlimit (
             -24.0f, 24.0f, static_cast<float> (item->getDoubleAttribute ("tune", 0.0))));
+        pad.outputBus.store (juce::jlimit (
+            0, numberOfPadOutputBuses,
+            item->getIntAttribute ("outputBus", 0)));
         pad.chokeGroup.store (juce::jlimit (
             0, numberOfPads, item->getIntAttribute ("chokeGroup", 0)));
+        pad.ampCurve.store (juce::jlimit (
+            -1.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute ("ampCurve", 0.0))));
         pad.ampAttackMs.store (juce::jlimit (
             0.0f, 2000.0f,
             static_cast<float> (item->getDoubleAttribute ("ampAttackMs", 0.0))));
@@ -3732,7 +7834,65 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
         pad.ampReleaseMs.store (juce::jlimit (
             0.0f, 5000.0f,
             static_cast<float> (item->getDoubleAttribute ("ampReleaseMs", 0.0))));
+        pad.filterCutoffHz.store (juce::jlimit (
+            20.0f, 20000.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "filterCutoffHz", 20000.0))));
+        pad.filterResonance.store (juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "filterResonance", 0.0))));
+        pad.filterDriveDb.store (juce::jlimit (
+            0.0f, 24.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "filterDriveDb", 0.0))));
+        pad.filterEnabled.store (item->getBoolAttribute (
+            "filterEnabled", false));
+        pad.filterType.store (juce::jlimit (
+            1, 7, item->getIntAttribute ("filterType", 1)));
+        pad.filterSlope.store (juce::jlimit (
+            0, 3, item->getIntAttribute ("filterSlope", 1)));
+        pad.highPassCutoffHz.store (juce::jlimit (
+            0.0f, 2000.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "highPassCutoffHz", 0.0))));
+        pad.compressorEnabled.store (item->getBoolAttribute (
+            "compressorEnabled", false));
+        pad.compressorThresholdDb.store (juce::jlimit (
+            -60.0f, 0.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorThresholdDb", -18.0))));
+        pad.compressorRatio.store (juce::jlimit (
+            1.0f, 20.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorRatio", 4.0))));
+        pad.compressorAttackMs.store (juce::jlimit (
+            0.1f, 100.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorAttackMs", 10.0))));
+        pad.compressorReleaseMs.store (juce::jlimit (
+            10.0f, 1000.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorReleaseMs", 100.0))));
+        pad.compressorKneeDb.store (juce::jlimit (
+            0.0f, 24.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorKneeDb", 6.0))));
+        pad.saturationAmount.store (juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "saturationAmount", 0.0))));
+        pad.saturationHardClipAmount.store (juce::jlimit (
+            0.0f, 1.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "saturationHardClip", 0.0))));
+        pad.saturationEnabled.store (item->getBoolAttribute (
+            "saturationEnabled", false));
         const bool savedLoopEnabled = item->getBoolAttribute ("loopEnabled", false);
+        pad.loopMode.store (juce::jlimit (
+            0, 1, item->getIntAttribute ("loopMode", 0)));
+        pad.sequencerGated.store (item->getBoolAttribute (
+            "sequencerGated", false));
         const bool hasSavedStart = item->hasAttribute ("startSample");
         const bool hasSavedEnd = item->hasAttribute ("endSample");
         const bool hasSavedLoopStart = item->hasAttribute ("loopStartSample");
@@ -3822,6 +7982,23 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
 
     if (auto* patternsXml = state->getChildByName ("PATTERNS"))
     {
+        for (auto& step : patternPlaybackSteps)
+            step.store (-1);
+
+        patternPlaybackChainEnabled.store (true);
+        patternPlaybackLoopEnabled.store (false);
+
+        if (auto* playbackXml = patternsXml->getChildByName (
+                "PATTERN_PLAYBACK"))
+        {
+            decodePatternPlaybackSteps (
+                playbackXml->getStringAttribute ("steps"));
+            patternPlaybackChainEnabled.store (
+                playbackXml->getBoolAttribute ("enabled", true));
+            patternPlaybackLoopEnabled.store (
+                playbackXml->getBoolAttribute ("loop", false));
+        }
+
         for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
         {
             storedPatterns[static_cast<std::size_t> (patternIndex)] = StoredPattern();
@@ -3869,12 +8046,22 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
 
         currentPatternIndex.store (restoredPattern);
         applyStoredPattern (restoredPattern);
+        refreshPatternPlaybackBars();
     }
+
     else
     {
+        for (auto& step : patternPlaybackSteps)
+            step.store (-1);
+
+        patternPlaybackChainEnabled.store (true);
+        patternPlaybackLoopEnabled.store (false);
+
         currentPatternIndex.store (0);
         captureCurrentPattern();
     }
+
+    loadGlobalFxXml (state->getChildByName ("GLOBAL_FX"));
 
     portableSettingsDirty.store (false);
     restoringHostState.store (false);

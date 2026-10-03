@@ -19,8 +19,23 @@ const juce::Colour textColour (0xffe8ebef);
 const juce::Colour mutedTextColour (0xff8d949e);
 const juce::Colour trimMarkerColour (0xffef5a5a);
 const juce::Colour loopMarkerColour (0xff23838a);
+const juce::Colour snapMarkerColour (0xff3f965b);
 constexpr int baseEditorWidth = 1280;
-constexpr int baseEditorHeight = 800;
+constexpr int baseEditorHeight = 862;
+
+float shapeAttackPhase (float phase, float curve) noexcept
+{
+    const float linear = juce::jlimit (0.0f, 1.0f, phase);
+    const float amount = juce::jlimit (-1.0f, 1.0f, curve);
+
+    if (amount < 0.0f)
+    {
+        const float exponent = std::pow (4.0f, -amount);
+        return 1.0f - std::pow (1.0f - linear, exponent);
+    }
+
+    return std::pow (linear, std::pow (4.0f, amount));
+}
 
 juce::Colour getPadColour (int index)
 {
@@ -76,8 +91,52 @@ public:
     juce::Label* createSliderTextBox (juce::Slider& slider) override
     {
         auto* label = juce::LookAndFeel_V4::createSliderTextBox (slider);
-        label->setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        label->setFont (juce::FontOptions (11.5f, juce::Font::bold));
         return label;
+    }
+
+    void drawComboBox (juce::Graphics& g,
+                       int width, int height,
+                       bool isButtonDown,
+                       int, int, int, int,
+                       juce::ComboBox& box) override
+    {
+        auto bounds = juce::Rectangle<float> (
+            0.5f, 0.5f, static_cast<float> (width - 1),
+            static_cast<float> (height - 1));
+        auto background = box.findColour (
+            juce::ComboBox::backgroundColourId);
+
+        if (isButtonDown)
+            background = background.brighter (0.12f);
+
+        g.setColour (background);
+        g.fillRoundedRectangle (bounds, 2.5f);
+        g.setColour (box.findColour (juce::ComboBox::outlineColourId));
+        g.drawRoundedRectangle (bounds, 2.5f, 1.0f);
+
+        const float arrowCentreX = static_cast<float> (width) - 8.0f;
+        const float arrowCentreY = static_cast<float> (height) * 0.52f;
+        juce::Path arrow;
+        arrow.startNewSubPath (arrowCentreX - 3.0f,
+                               arrowCentreY - 1.5f);
+        arrow.lineTo (arrowCentreX, arrowCentreY + 1.5f);
+        arrow.lineTo (arrowCentreX + 3.0f,
+                      arrowCentreY - 1.5f);
+        g.setColour (box.findColour (juce::ComboBox::arrowColourId));
+        g.strokePath (arrow, juce::PathStrokeType (
+            1.25f, juce::PathStrokeType::curved,
+            juce::PathStrokeType::rounded));
+    }
+
+    void positionComboBoxText (juce::ComboBox& box,
+                               juce::Label& label) override
+    {
+        label.setBounds (3, 1,
+                         juce::jmax (1, box.getWidth() - 17),
+                         juce::jmax (1, box.getHeight() - 2));
+        label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        label.setMinimumHorizontalScale (0.72f);
     }
 
     void drawButtonBackground (juce::Graphics& g,
@@ -169,25 +228,41 @@ public:
                            float endAngle,
                            juce::Slider& slider) override
     {
-        const auto radius = static_cast<float> (juce::jmin (width, height)) * 0.40f;
+        const auto radius = static_cast<float> (juce::jmin (width, height)) * 0.40f
+                          + 2.0f;
         const auto centre = juce::Point<float> (static_cast<float> (x + width) * 0.5f,
                                                 static_cast<float> (y + height) * 0.5f);
         const auto angle = startAngle + position * (endAngle - startAngle);
         const auto accent = slider.findColour (juce::Slider::rotarySliderFillColourId);
 
+        constexpr float ringThickness = 2.0f;
         juce::Path track;
         track.addCentredArc (centre.x, centre.y, radius, radius,
                              0.0f, startAngle, endAngle, true);
         g.setColour (lineColour);
-        g.strokePath (track, juce::PathStrokeType (4.0f,
+        g.strokePath (track, juce::PathStrokeType (ringThickness,
                                                    juce::PathStrokeType::curved,
                                                    juce::PathStrokeType::rounded));
 
+        const double minimum = slider.getMinimum();
+        const double maximum = slider.getMaximum();
+        const double largestMagnitude = juce::jmax (std::abs (minimum),
+                                                    std::abs (maximum));
+        const bool isBipolar = minimum < 0.0 && maximum > 0.0
+                            && std::abs (std::abs (minimum) - std::abs (maximum))
+                                   <= juce::jmax (1.0e-9,
+                                                  largestMagnitude * 1.0e-6);
+        const float fillOrigin = isBipolar
+            ? startAngle + static_cast<float> (
+                  slider.valueToProportionOfLength (0.0))
+                  * (endAngle - startAngle)
+            : startAngle;
         juce::Path fill;
         fill.addCentredArc (centre.x, centre.y, radius, radius,
-                            0.0f, startAngle, angle, true);
+                            0.0f, juce::jmin (fillOrigin, angle),
+                            juce::jmax (fillOrigin, angle), true);
         g.setColour (accent);
-        g.strokePath (fill, juce::PathStrokeType (4.0f,
+        g.strokePath (fill, juce::PathStrokeType (ringThickness,
                                                   juce::PathStrokeType::curved,
                                                   juce::PathStrokeType::rounded));
 
@@ -214,6 +289,7 @@ public:
         refresh,
         preview,
         save,
+        load,
         openFolder,
         samples,
         kits,
@@ -337,6 +413,25 @@ public:
             g.fillRect (label);
             auto hub = disk.reduced (3.0f, 2.0f);
             g.drawRect (hub, 1.2f);
+        }
+        else if (icon == Icon::load)
+        {
+            const float arrowX = centre.x;
+            const float arrowTop = iconBounds.getY();
+            const float arrowBottom = centre.y + 2.0f;
+            g.drawLine (arrowX, arrowTop, arrowX, arrowBottom, 1.8f);
+            g.drawLine (arrowX, arrowBottom,
+                        arrowX - 3.5f, arrowBottom - 3.5f, 1.8f);
+            g.drawLine (arrowX, arrowBottom,
+                        arrowX + 3.5f, arrowBottom - 3.5f, 1.8f);
+            auto tray = iconBounds.reduced (1.5f, 1.0f);
+            tray.removeFromTop (tray.getHeight() * 0.58f);
+            juce::Path trayPath;
+            trayPath.startNewSubPath (tray.getX(), tray.getY());
+            trayPath.lineTo (tray.getX(), tray.getBottom());
+            trayPath.lineTo (tray.getRight(), tray.getBottom());
+            trayPath.lineTo (tray.getRight(), tray.getY());
+            g.strokePath (trayPath, juce::PathStrokeType (1.6f));
         }
         else if (icon == Icon::openFolder)
         {
@@ -467,6 +562,86 @@ private:
     double wheelStep = 1.0;
 };
 
+class SVDrummerLedButton final : public juce::Button
+{
+public:
+    explicit SVDrummerLedButton (const juce::String& accessibleName)
+        : juce::Button (accessibleName)
+    {
+        setClickingTogglesState (true);
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+
+    void paintButton (juce::Graphics& g, bool highlighted, bool down) override
+    {
+        auto bounds = getLocalBounds().toFloat().reduced (2.0f);
+        const auto amber = juce::Colour (0xffffb347);
+        auto fill = getToggleState() ? amber : amber.darker (0.72f);
+
+        if (down)
+            fill = fill.brighter (0.20f);
+        else if (highlighted)
+            fill = fill.brighter (0.10f);
+
+        g.setColour (juce::Colours::black.withAlpha (0.48f));
+        g.fillEllipse (bounds.expanded (1.0f));
+        g.setColour (fill);
+        g.fillEllipse (bounds);
+        g.setColour ((getToggleState() ? amber.brighter (0.35f)
+                                       : lineColour.brighter (0.12f))
+                         .withAlpha (0.90f));
+        g.drawEllipse (bounds.reduced (0.5f), 1.0f);
+
+        if (getToggleState())
+        {
+            g.setColour (amber.withAlpha (0.20f));
+            g.fillEllipse (bounds.expanded (2.0f));
+        }
+    }
+};
+
+class SVDrummerWheelComboBox final : public juce::ComboBox
+{
+public:
+    void mouseWheelMove (const juce::MouseEvent&,
+                         const juce::MouseWheelDetails& wheel) override
+    {
+        if (! isEnabled() || isPopupActive()
+            || getNumItems() <= 0 || wheel.deltaY == 0.0f)
+        {
+            return;
+        }
+
+        float movement = wheel.deltaY;
+
+        if (wheel.isReversed)
+            movement = -movement;
+
+        const int direction = movement > 0.0f ? -1 : 1;
+        const double now = juce::Time::getMillisecondCounterHiRes();
+
+        // Some Windows mouse drivers deliver one physical wheel notch as two
+        // same-direction callbacks. Limit those short callback pairs to one
+        // selector step while still allowing sustained scrolling.
+        if (direction == lastWheelDirection
+            && now - lastWheelStepMilliseconds < 90.0)
+        {
+            return;
+        }
+
+        lastWheelDirection = direction;
+        lastWheelStepMilliseconds = now;
+        setSelectedItemIndex (
+            juce::jlimit (0, getNumItems() - 1,
+                          getSelectedItemIndex() + direction),
+            juce::sendNotificationSync);
+    }
+
+private:
+    double lastWheelStepMilliseconds = -1000.0;
+    int lastWheelDirection = 0;
+};
+
 class SampleTreeRow;
 
 class SampleTreeItem final : public juce::TreeViewItem
@@ -475,11 +650,15 @@ public:
     SampleTreeItem (juce::File itemFile,
                     juce::File libraryRoot,
                     bool topLevel,
-                    SVDrummerAudioProcessor::BrowserMode browserMode)
+                    SVDrummerAudioProcessor::BrowserMode browserMode,
+                    std::function<void (const juce::File&)> activationCallback,
+                    std::function<void (const juce::File&)> contextMenuCallback)
         : file (std::move (itemFile)),
           rootFolder (std::move (libraryRoot)),
           isTopLevel (topLevel),
-          mode (browserMode)
+          mode (browserMode),
+          onFileActivated (std::move (activationCallback)),
+          onFileContextMenu (std::move (contextMenuCallback))
     {
     }
 
@@ -534,11 +713,13 @@ public:
 
         for (const auto& directory : directories)
             addSubItem (new SampleTreeItem (
-                directory, rootFolder, false, mode));
+                directory, rootFolder, false, mode, onFileActivated,
+                onFileContextMenu));
 
         for (const auto& sample : samples)
             addSubItem (new SampleTreeItem (
-                sample, rootFolder, false, mode));
+                sample, rootFolder, false, mode, onFileActivated,
+                onFileContextMenu));
     }
 
     void paintItem (juce::Graphics& g, int width, int height) override
@@ -599,7 +780,23 @@ public:
 
     const juce::File& getFile() const noexcept       { return file; }
     const juce::File& getRootFolder() const noexcept { return rootFolder; }
-    bool isSupportedDragFile() const                 { return isSupportedFile (file); }
+    bool isSupportedDragFile() const
+    {
+        return mode != SVDrummerAudioProcessor::BrowserMode::projects
+            && isSupportedFile (file);
+    }
+
+    void activateFile()
+    {
+        if (file.existsAsFile() && onFileActivated != nullptr)
+            onFileActivated (file);
+    }
+
+    void showFileContextMenu()
+    {
+        if (file.existsAsFile() && onFileContextMenu != nullptr)
+            onFileContextMenu (file);
+    }
 
 private:
     bool isSupportedFile (const juce::File& candidate) const
@@ -624,6 +821,8 @@ private:
     bool isTopLevel = false;
     SVDrummerAudioProcessor::BrowserMode mode =
         SVDrummerAudioProcessor::BrowserMode::samples;
+    std::function<void (const juce::File&)> onFileActivated;
+    std::function<void (const juce::File&)> onFileContextMenu;
 };
 
 class SampleTreeRow final : public juce::Component
@@ -636,21 +835,27 @@ public:
         item.paintRow (g, getWidth(), getHeight());
     }
 
-    void mouseDown (const juce::MouseEvent&) override
+    void mouseDown (const juce::MouseEvent& event) override
     {
         dragStarted = false;
         item.setSelected (true, true);
+
+        if (event.mods.isRightButtonDown())
+            item.showFileContextMenu();
     }
 
     void mouseDoubleClick (const juce::MouseEvent&) override
     {
         if (item.getFile().isDirectory())
             item.setOpen (! item.isOpen());
+        else
+            item.activateFile();
     }
 
     void mouseDrag (const juce::MouseEvent& event) override
     {
-        if (dragStarted || event.getDistanceFromDragStart() < 5
+        if (! event.mods.isLeftButtonDown()
+            || dragStarted || event.getDistanceFromDragStart() < 5
             || ! item.getFile().existsAsFile()
             || ! item.isSupportedDragFile())
             return;
@@ -704,18 +909,71 @@ public:
     }
 
     void rebuild (const juce::StringArray& folders,
-                  SVDrummerAudioProcessor::BrowserMode mode)
+                  SVDrummerAudioProcessor::BrowserMode mode,
+                  const juce::StringArray& defaultFolders = {})
     {
         rootItem.clearSubItems();
+
+        struct RootFolderEntry
+        {
+            juce::File folder;
+            int defaultIndex = -1;
+        };
+
+        juce::Array<RootFolderEntry> sortedFolders;
 
         for (const auto& path : folders)
         {
             const juce::File folder (path);
 
             if (folder.isDirectory())
-                rootItem.addSubItem (new SampleTreeItem (
-                    folder, folder, true, mode));
+            {
+                int defaultIndex = -1;
+
+                for (int index = 0; index < defaultFolders.size(); ++index)
+                {
+                    if (folder == juce::File (defaultFolders[index]))
+                    {
+                        defaultIndex = index;
+                        break;
+                    }
+                }
+
+                sortedFolders.add ({ folder, defaultIndex });
+            }
         }
+
+        struct RootFolderSorter
+        {
+            static int compareElements (const RootFolderEntry& first,
+                                        const RootFolderEntry& second)
+            {
+                const bool firstIsDefault = first.defaultIndex >= 0;
+                const bool secondIsDefault = second.defaultIndex >= 0;
+
+                if (firstIsDefault != secondIsDefault)
+                    return firstIsDefault ? -1 : 1;
+
+                if (firstIsDefault && first.defaultIndex != second.defaultIndex)
+                    return first.defaultIndex < second.defaultIndex ? -1 : 1;
+
+                const int nameComparison = first.folder.getFileName().compareNatural (
+                    second.folder.getFileName());
+
+                if (nameComparison != 0)
+                    return nameComparison;
+
+                return first.folder.getFullPathName().compareNatural (
+                    second.folder.getFullPathName());
+            }
+        } sorter;
+
+        sortedFolders.sort (sorter);
+
+        for (const auto& entry : sortedFolders)
+            rootItem.addSubItem (new SampleTreeItem (
+                entry.folder, entry.folder, true, mode,
+                onFileDoubleClicked, onFileContextMenu));
 
         rootItem.setOpen (true);
 
@@ -765,8 +1023,22 @@ public:
         return rootItem.getNumSubItems() > 0;
     }
 
+    void setFileDoubleClickCallback (
+        std::function<void (const juce::File&)> callback)
+    {
+        onFileDoubleClicked = std::move (callback);
+    }
+
+    void setFileContextMenuCallback (
+        std::function<void (const juce::File&)> callback)
+    {
+        onFileContextMenu = std::move (callback);
+    }
+
 private:
     SampleTreeRoot rootItem;
+    std::function<void (const juce::File&)> onFileDoubleClicked;
+    std::function<void (const juce::File&)> onFileContextMenu;
 };
 
 class SVDrummerBrowserPanel final : public juce::Component
@@ -774,10 +1046,12 @@ class SVDrummerBrowserPanel final : public juce::Component
 public:
     SVDrummerBrowserPanel (SVDrummerAudioProcessor& owner,
                            std::function<juce::Result()> saveCallback,
-                           std::function<bool()> unsavedStateCallback)
+                           std::function<bool()> unsavedStateCallback,
+                           std::function<void()> loadCompletedCallback)
         : processor (owner),
           onSaveRequested (std::move (saveCallback)),
-          hasUnsavedChanges (std::move (unsavedStateCallback))
+          hasUnsavedChanges (std::move (unsavedStateCallback)),
+          onLoadCompleted (std::move (loadCompletedCallback))
     {
         samplesButton.setClickingTogglesState (false);
         kitsButton.setClickingTogglesState (false);
@@ -849,13 +1123,7 @@ public:
                 return;
             }
 
-            const auto result = processor.previewSampleFile (selected);
-
-            if (result.failed())
-                juce::AlertWindow::showMessageBoxAsync (
-                    juce::MessageBoxIconType::WarningIcon,
-                    "SV-Drummer",
-                    "Could not preview the sample:\n\n" + result.getErrorMessage());
+            previewSample (selected);
         };
         saveButton.onClick = [this]
         {
@@ -866,7 +1134,28 @@ public:
             else if (mode == SVDrummerAudioProcessor::BrowserMode::projects)
                 chooseProjectSaveLocation();
         };
+        loadButton.onClick = [this]
+        {
+            if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
+                chooseKitLoadLocation();
+            else if (mode == SVDrummerAudioProcessor::BrowserMode::patterns)
+                choosePatternLoadLocation();
+        };
         openFolderButton.onClick = [this] { openCurrentBrowserFolder(); };
+        tree.setFileDoubleClickCallback (
+            [this] (const juce::File& file)
+            {
+                if (mode == SVDrummerAudioProcessor::BrowserMode::projects
+                    && SVDrummerAudioProcessor::isSupportedProjectFile (file))
+                    loadProjectWithConfirmation (file);
+            });
+        tree.setFileContextMenuCallback (
+            [this] (const juce::File& file)
+            {
+                if (mode == SVDrummerAudioProcessor::BrowserMode::samples
+                    && SVDrummerAudioProcessor::isSupportedAudioFile (file))
+                    previewSample (file);
+            });
         samplesButton.setTooltip ("Samples");
         kitsButton.setTooltip ("Kits");
         patternsButton.setTooltip ("Patterns and Pattern Sets");
@@ -877,6 +1166,7 @@ public:
         previewButton.setTooltip ("Play the selected sample without loading it onto a pad");
         saveButton.setTooltip (
             "Save all pads, patterns, sequencer data, browser folders and GUI zoom");
+        loadButton.setTooltip ("Load a library file from elsewhere on disk");
         openFolderButton.setTooltip ("Open this library folder in Explorer");
 
         addAndMakeVisible (samplesButton);
@@ -888,6 +1178,7 @@ public:
         addAndMakeVisible (refreshButton);
         addAndMakeVisible (previewButton);
         addAndMakeVisible (saveButton);
+        addAndMakeVisible (loadButton);
         addAndMakeVisible (openFolderButton);
         addAndMakeVisible (tree);
         addAndMakeVisible (emptyLabel);
@@ -964,6 +1255,12 @@ public:
             layoutToolButtons (tools, { &addFolderButton, &removeFolderButton,
                                         &previewButton, &openFolderButton });
         }
+        else if (mode == SVDrummerAudioProcessor::BrowserMode::kits
+                 || mode == SVDrummerAudioProcessor::BrowserMode::patterns)
+        {
+            layoutToolButtons (
+                tools, { &saveButton, &loadButton, &openFolderButton });
+        }
         else
         {
             layoutToolButtons (tools, { &saveButton, &openFolderButton });
@@ -989,7 +1286,10 @@ public:
         if (mode == SVDrummerAudioProcessor::BrowserMode::samples)
         {
             folders = processor.getBrowserFolders();
-            tree.rebuild (folders, mode);
+            juce::StringArray defaultFolders;
+            defaultFolders.add (
+                processor.getPortableSamplesDirectory().getFullPathName());
+            tree.rebuild (folders, mode, defaultFolders);
             emptyLabel.setVisible (folders.isEmpty());
         }
         else if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
@@ -997,7 +1297,7 @@ public:
             const auto kitDirectory = processor.getPortableKitsDirectory();
             kitDirectory.createDirectory();
             folders.add (kitDirectory.getFullPathName());
-            tree.rebuild (folders, mode);
+            tree.rebuild (folders, mode, folders);
             emptyLabel.setVisible (kitDirectory.findChildFiles (
                 juce::File::findFiles, true, "*.svkit").isEmpty());
         }
@@ -1011,7 +1311,7 @@ public:
             patternSetsDirectory.createDirectory();
             folders.add (patternsDirectory.getFullPathName());
             folders.add (patternSetsDirectory.getFullPathName());
-            tree.rebuild (folders, mode);
+            tree.rebuild (folders, mode, folders);
             const bool hasPatternFiles = ! patternsDirectory.findChildFiles (
                 juce::File::findFiles, true, "*.svpattern").isEmpty()
                 || ! patternSetsDirectory.findChildFiles (
@@ -1023,7 +1323,7 @@ public:
             const auto projectsDirectory = processor.getPortableProjectsDirectory();
             projectsDirectory.createDirectory();
             folders.add (projectsDirectory.getFullPathName());
-            tree.rebuild (folders, mode);
+            tree.rebuild (folders, mode, folders);
             emptyLabel.setVisible (projectsDirectory.findChildFiles (
                 juce::File::findFiles, true, "*.svproject").isEmpty());
         }
@@ -1048,6 +1348,188 @@ public:
     }
 
 private:
+    void previewSample (const juce::File& file)
+    {
+        const auto result = processor.previewSampleFile (file);
+
+        if (result.failed())
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer",
+                "Could not preview the sample:\n\n" + result.getErrorMessage());
+    }
+
+    void loadProjectWithConfirmation (const juce::File& file)
+    {
+        if (! processor.kitHasSamples() && ! processor.patternSetHasSteps())
+        {
+            finishLoadingProject (file);
+            return;
+        }
+
+        juce::Component::SafePointer<SVDrummerBrowserPanel> safeThis (this);
+        juce::AlertWindow::showOkCancelBox (
+            juce::MessageBoxIconType::QuestionIcon,
+            "Replace Current Project?",
+            "Loading this Project will replace the complete Kit and Pattern Set.\n\n"
+                + file.getFileNameWithoutExtension(),
+            "Load Project", "Cancel", this,
+            juce::ModalCallbackFunction::create (
+                [safeThis, file] (int result)
+                {
+                    if (safeThis != nullptr && result != 0)
+                        safeThis->finishLoadingProject (file);
+                }));
+    }
+
+    void finishLoadingProject (const juce::File& file)
+    {
+        const auto result = processor.loadProjectFromFile (file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer",
+                "Could not load the Project:\n\n" + result.getErrorMessage());
+        }
+        else if (onLoadCompleted)
+        {
+            onLoadCompleted();
+        }
+    }
+
+    void chooseKitLoadLocation()
+    {
+        auto kitDirectory = processor.getPortableKitsDirectory();
+        kitDirectory.createDirectory();
+        folderChooser = std::make_unique<juce::FileChooser> (
+            "Load SV-Drummer Kit", kitDirectory, "*.svkit", true);
+
+        juce::Component::SafePointer<SVDrummerBrowserPanel> safeThis (this);
+        folderChooser->launchAsync (
+            juce::FileBrowserComponent::openMode
+                | juce::FileBrowserComponent::canSelectFiles,
+            [safeThis] (const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                const auto file = chooser.getResult();
+
+                if (file.existsAsFile())
+                    safeThis->loadKitWithConfirmation (file);
+            });
+    }
+
+    void loadKitWithConfirmation (const juce::File& file)
+    {
+        if (! processor.kitHasSamples())
+        {
+            finishLoadingKit (file);
+            return;
+        }
+
+        juce::Component::SafePointer<SVDrummerBrowserPanel> safeThis (this);
+        juce::AlertWindow::showOkCancelBox (
+            juce::MessageBoxIconType::QuestionIcon,
+            "Replace Current Kit?",
+            "Loading this Kit will replace all sixteen pads and their settings.\n\n"
+                + file.getFileNameWithoutExtension(),
+            "Load Kit", "Cancel", this,
+            juce::ModalCallbackFunction::create (
+                [safeThis, file] (int result)
+                {
+                    if (safeThis != nullptr && result != 0)
+                        safeThis->finishLoadingKit (file);
+                }));
+    }
+
+    void finishLoadingKit (const juce::File& file)
+    {
+        const auto result = processor.loadKitFromFile (file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer",
+                "Could not load the Kit:\n\n" + result.getErrorMessage());
+        }
+        else if (onLoadCompleted)
+        {
+            onLoadCompleted();
+        }
+    }
+
+    void choosePatternLoadLocation()
+    {
+        auto patternsDirectory = processor.getPortablePatternsDirectory()
+                                          .getChildFile ("Patterns");
+        patternsDirectory.createDirectory();
+        folderChooser = std::make_unique<juce::FileChooser> (
+            "Load SV-Drummer Pattern", patternsDirectory,
+            "*.svpattern", true);
+
+        juce::Component::SafePointer<SVDrummerBrowserPanel> safeThis (this);
+        folderChooser->launchAsync (
+            juce::FileBrowserComponent::openMode
+                | juce::FileBrowserComponent::canSelectFiles,
+            [safeThis] (const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                const auto file = chooser.getResult();
+
+                if (file.existsAsFile())
+                    safeThis->loadPatternWithConfirmation (file);
+            });
+    }
+
+    void loadPatternWithConfirmation (const juce::File& file)
+    {
+        const int patternIndex = processor.getCurrentPatternIndex();
+
+        if (! processor.patternHasSteps (patternIndex))
+        {
+            finishLoadingPattern (patternIndex, file);
+            return;
+        }
+
+        juce::Component::SafePointer<SVDrummerBrowserPanel> safeThis (this);
+        juce::AlertWindow::showOkCancelBox (
+            juce::MessageBoxIconType::QuestionIcon,
+            "Replace Pattern?",
+            "Pattern " + juce::String (patternIndex + 1)
+                + " already contains steps. Replace it?\n\n"
+                + file.getFileNameWithoutExtension(),
+            "Replace", "Cancel", this,
+            juce::ModalCallbackFunction::create (
+                [safeThis, patternIndex, file] (int result)
+                {
+                    if (safeThis != nullptr && result != 0)
+                        safeThis->finishLoadingPattern (patternIndex, file);
+                }));
+    }
+
+    void finishLoadingPattern (int patternIndex, const juce::File& file)
+    {
+        const auto result = processor.loadPatternIntoSlot (patternIndex, file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer",
+                "Could not load the Pattern:\n\n" + result.getErrorMessage());
+        }
+        else if (onLoadCompleted)
+        {
+            onLoadCompleted();
+        }
+    }
+
     void showBrowserMode (SVDrummerAudioProcessor::BrowserMode newMode)
     {
         if (initialised)
@@ -1076,6 +1558,10 @@ private:
         refreshButton.setVisible (true);
         previewButton.setVisible (showingSamples);
         saveButton.setVisible (! showingSamples);
+        const bool canBrowseToLoad =
+            mode == SVDrummerAudioProcessor::BrowserMode::kits
+            || mode == SVDrummerAudioProcessor::BrowserMode::patterns;
+        loadButton.setVisible (canBrowseToLoad);
         openFolderButton.setVisible (true);
         const auto saveTooltip =
             mode == SVDrummerAudioProcessor::BrowserMode::kits
@@ -1084,6 +1570,10 @@ private:
                 ? juce::String ("Save the currently selected Pattern")
                 : juce::String ("Save the complete Kit and Pattern Set as a Project");
         saveButton.setTooltip (saveTooltip);
+        loadButton.setTooltip (
+            mode == SVDrummerAudioProcessor::BrowserMode::kits
+                ? juce::String ("Browse to and load an SV-Drummer Kit")
+                : juce::String ("Browse to and load a Pattern into the selected slot"));
         refreshSaveState();
 
         if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
@@ -1101,7 +1591,7 @@ private:
         else if (mode == SVDrummerAudioProcessor::BrowserMode::projects)
         {
             emptyLabel.setText ("Saved Projects appear here.\n\n"
-                                "Drag a Project onto any pad or Pattern button to load it.",
+                                "Double-click a Project to load it.",
                                 juce::dontSendNotification);
         }
         else
@@ -1332,6 +1822,7 @@ private:
     SVDrummerAudioProcessor& processor;
     std::function<juce::Result()> onSaveRequested;
     std::function<bool()> hasUnsavedChanges;
+    std::function<void()> onLoadCompleted;
     SVDrummerIconButton samplesButton {
         "Samples", SVDrummerIconButton::Icon::samples };
     SVDrummerIconButton kitsButton {
@@ -1350,6 +1841,8 @@ private:
         "Preview sample", SVDrummerIconButton::Icon::preview };
     SVDrummerIconButton saveButton {
         "Save library item", SVDrummerIconButton::Icon::save };
+    SVDrummerIconButton loadButton {
+        "Load library item", SVDrummerIconButton::Icon::load };
     SVDrummerIconButton openFolderButton {
         "Open library folder", SVDrummerIconButton::Icon::openFolder };
     SampleBrowserTree tree;
@@ -1369,13 +1862,17 @@ public:
                            int padNumber,
                            std::function<void (int)> settingsCallback,
                            std::function<void (int)> selectionCallback,
-                           std::function<void()> loadCompletedCallback)
+                           std::function<void()> loadCompletedCallback,
+                           std::function<void (juce::Point<int>,
+                                               const juce::String&)>
+                               volumeTooltipCallback)
         : processor (owner),
           padIndex (padNumber),
           accent (getPadColour (padNumber)),
           onSettingsRequested (std::move (settingsCallback)),
           onSelectionRequested (std::move (selectionCallback)),
-          onLoadCompleted (std::move (loadCompletedCallback))
+          onLoadCompleted (std::move (loadCompletedCallback)),
+          onVolumeAdjusted (std::move (volumeTooltipCallback))
     {
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
         lastActivityCounter = processor.getPadActivityCounter (padIndex);
@@ -1386,9 +1883,23 @@ public:
         auto bounds = getLocalBounds().toFloat();
         const bool muted = processor.isPadMuted (padIndex);
         const bool soloed = processor.isPadSoloed (padIndex);
+        bool anyPadSoloed = false;
+
+        for (int index = 0;
+             index < SVDrummerAudioProcessor::numberOfPads;
+             ++index)
+        {
+            if (processor.isPadSoloed (index))
+            {
+                anyPadSoloed = true;
+                break;
+            }
+        }
+
+        const bool visuallyMuted = muted || (anyPadSoloed && ! soloed);
         const bool empty = processor.getPadSample (padIndex) == nullptr;
-        const auto occupiedAccent = empty ? accent.darker (1.22f) : accent;
-        const auto effectiveAccent = muted
+        const auto occupiedAccent = empty ? accent.darker (1.86f) : accent;
+        const auto effectiveAccent = visuallyMuted
                                        ? occupiedAccent.withSaturation (0.18f).darker (0.2f)
                                        : occupiedAccent;
 
@@ -1411,7 +1922,8 @@ public:
         g.drawRoundedRectangle (bounds.reduced (0.75f), 4.0f, soloed ? 2.0f : 1.2f);
 
         const auto footer = getFooterBounds().toFloat();
-        g.setColour (effectiveAccent.withAlpha (muted ? 0.22f : 0.82f));
+        g.setColour (effectiveAccent.withAlpha (
+            visuallyMuted ? 0.22f : 0.82f));
         g.fillRect (footer);
 
         auto titleRow = getLocalBounds().reduced (7).removeFromTop (22);
@@ -1420,7 +1932,7 @@ public:
         titleRow.removeFromRight (4);
 
         const auto sampleName = processor.getPadDisplayName (padIndex);
-        g.setColour (muted ? mutedTextColour : textColour);
+        g.setColour (visuallyMuted ? mutedTextColour : textColour);
         g.setFont (juce::jmax (10.0f, static_cast<float> (getHeight()) * 0.095f));
         g.drawText (sampleName, titleRow,
                     juce::Justification::centredLeft, true);
@@ -1445,11 +1957,20 @@ public:
                     juce::Justification::centred, false);
 
         drawWaveform (g, effectiveAccent);
+        drawVolumeBar (g, effectiveAccent);
         drawFooter (g, footer, muted, soloed);
     }
 
     void mouseDown (const juce::MouseEvent& event) override
     {
+        auditioning = false;
+
+        if (event.mods.isRightButtonDown())
+        {
+            showPadMenu();
+            return;
+        }
+
         const auto point = event.getPosition();
 
         if (getIndicatorBounds().contains (point))
@@ -1487,21 +2008,49 @@ public:
             return;
         }
 
+        auditioning = true;
         processor.triggerPadFromInterface (padIndex, 1.0f);
+    }
+
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (auditioning)
+        {
+            processor.releasePadFromInterface (padIndex);
+            auditioning = false;
+        }
     }
 
     void mouseWheelMove (const juce::MouseEvent& event,
                          const juce::MouseWheelDetails& wheel) override
     {
-        if (! noteBounds.contains (event.getPosition()) || wheel.deltaY == 0.0f)
+        if (wheel.deltaY == 0.0f)
         {
             juce::Component::mouseWheelMove (event, wheel);
             return;
         }
 
-        processor.setPadMidiNote (
-            padIndex,
-            processor.getPadMidiNote (padIndex) + (wheel.deltaY > 0.0f ? 1 : -1));
+        if (noteBounds.contains (event.getPosition()))
+        {
+            processor.setPadMidiNote (
+                padIndex,
+                processor.getPadMidiNote (padIndex)
+                    + (wheel.deltaY > 0.0f ? 1 : -1));
+        }
+        else
+        {
+            processor.setPadVolumeDb (
+                padIndex,
+                processor.getPadVolumeDb (padIndex)
+                    + (wheel.deltaY > 0.0f ? 0.5f : -0.5f));
+
+            if (onVolumeAdjusted)
+                onVolumeAdjusted (
+                    event.getScreenPosition(),
+                    juce::String (processor.getPadVolumeDb (padIndex), 1)
+                        + " dB");
+        }
+
         repaint();
     }
 
@@ -1580,6 +2129,66 @@ public:
     }
 
 private:
+    void showPadMenu()
+    {
+        juce::PopupMenu menu;
+        menu.addItem (1, "Clear");
+        menu.addItem (2, "Copy");
+        menu.addItem (3, "Paste", processor.canPastePad());
+
+        juce::Component::SafePointer<SVDrummerPadComponent> safeThis (this);
+        menu.showMenuAsync (
+            juce::PopupMenu::Options().withTargetComponent (this),
+            [safeThis] (int result)
+            {
+                if (safeThis == nullptr || result == 0)
+                    return;
+
+                if (result == 1)
+                {
+                    safeThis->clearPadWithConfirmation();
+                }
+                else if (result == 2)
+                {
+                    safeThis->processor.copyPad (safeThis->padIndex);
+                }
+                else if (result == 3)
+                {
+                    safeThis->processor.pastePad (safeThis->padIndex);
+
+                    if (safeThis->onLoadCompleted)
+                        safeThis->onLoadCompleted();
+
+                    safeThis->repaint();
+                }
+            });
+    }
+
+    void clearPadWithConfirmation()
+    {
+        juce::Component::SafePointer<SVDrummerPadComponent> safeThis (this);
+        juce::AlertWindow::showOkCancelBox (
+            juce::MessageBoxIconType::QuestionIcon,
+            "Clear Drum Pad?",
+            "Clear Pad " + juce::String (padIndex + 1)
+                + " and reset its sample assignment and all settings to default?\n\n"
+                  "The original audio file will not be deleted.",
+            "Clear", "Cancel", this,
+            juce::ModalCallbackFunction::create (
+                [safeThis] (int result)
+                {
+                    if (safeThis == nullptr || result == 0)
+                        return;
+
+                    safeThis->processor.resetPadToDefault (safeThis->padIndex);
+
+                    if (safeThis->onLoadCompleted)
+                        safeThis->onLoadCompleted();
+
+                    safeThis->repaint();
+                }));
+    }
+
     juce::Rectangle<int> getIndicatorBounds() const
     {
         auto titleRow = getLocalBounds().reduced (7).removeFromTop (22);
@@ -1597,6 +2206,7 @@ private:
         auto waveformBounds = getLocalBounds().reduced (7);
         waveformBounds.removeFromTop (22);
         waveformBounds.removeFromBottom (getFooterBounds().getHeight() - 4);
+        waveformBounds.removeFromRight (8);
 
         if (sample == nullptr || sample->waveform.empty())
         {
@@ -1642,6 +2252,32 @@ private:
         g.drawHorizontalLine (static_cast<int> (middle),
                               static_cast<float> (waveformBounds.getX()),
                               static_cast<float> (waveformBounds.getRight()));
+    }
+
+    void drawVolumeBar (juce::Graphics& g, juce::Colour colour)
+    {
+        auto trackArea = getLocalBounds().toFloat().reduced (5.0f);
+        trackArea.removeFromTop (28.0f);
+        trackArea.removeFromBottom (
+            static_cast<float> (getFooterBounds().getHeight()) + 1.0f);
+        auto track = trackArea.removeFromRight (4.0f);
+
+        if (track.getHeight() <= 0.0f)
+            return;
+
+        g.setColour (juce::Colours::black.withAlpha (0.58f));
+        g.fillRect (track);
+        g.setColour (juce::Colours::white.withAlpha (0.48f));
+        g.drawRect (track, 1.0f);
+
+        const float proportion = juce::jmap (
+            juce::jlimit (-60.0f, 6.0f,
+                          processor.getPadVolumeDb (padIndex)),
+            -60.0f, 6.0f, 0.0f, 1.0f);
+        auto current = track;
+        current.removeFromTop (current.getHeight() * (1.0f - proportion));
+        g.setColour (colour.brighter (0.28f).withAlpha (0.96f));
+        g.fillRect (current.reduced (0.75f, 0.75f));
     }
 
     void drawFooter (juce::Graphics& g,
@@ -1845,14 +2481,51 @@ private:
     std::function<void (int)> onSettingsRequested;
     std::function<void (int)> onSelectionRequested;
     std::function<void()> onLoadCompleted;
+    std::function<void (juce::Point<int>, const juce::String&)>
+        onVolumeAdjusted;
     juce::Rectangle<int> noteBounds;
     juce::Rectangle<int> muteBounds;
     juce::Rectangle<int> soloBounds;
     juce::Rectangle<int> settingsBounds;
     std::uint64_t lastActivityCounter = 0;
     float flashAmount = 0.0f;
+    bool auditioning = false;
     bool dropHighlight = false;
     bool selected = false;
+};
+
+class SVDrummerTransientTooltip final : public juce::Component
+{
+public:
+    SVDrummerTransientTooltip()
+    {
+        setInterceptsMouseClicks (false, false);
+        setAlwaysOnTop (true);
+    }
+
+    void setMessage (const juce::String& newMessage, float newFontHeight)
+    {
+        message = newMessage;
+        fontHeight = newFontHeight;
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (juce::Colour (0xff202327).withAlpha (0.97f));
+        g.fillRoundedRectangle (bounds, 4.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.34f));
+        g.drawRoundedRectangle (bounds, 4.0f, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.96f));
+        g.setFont (juce::FontOptions (fontHeight, juce::Font::bold));
+        g.drawText (message, getLocalBounds().reduced (7, 1),
+                    juce::Justification::centred, false);
+    }
+
+private:
+    juce::String message;
+    float fontHeight = 12.0f;
 };
 
 class SVDrummerWaveformEditor final : public juce::Component
@@ -1884,6 +2557,12 @@ public:
             displayedSample.reset();
         }
 
+        repaint();
+    }
+
+    void setMarkerHeaderLeftInset (float inset)
+    {
+        markerHeaderLeftInset = juce::jmax (0.0f, inset);
         repaint();
     }
 
@@ -2117,6 +2796,8 @@ public:
 
     void mouseDown (const juce::MouseEvent& event) override
     {
+        auditioning = false;
+
         if (processor.getPadSample (padIndex) == nullptr
             || ! event.mods.isLeftButtonDown())
             return;
@@ -2168,6 +2849,7 @@ public:
         else
         {
             draggingMarker = false;
+            auditioning = true;
             processor.triggerPadFromInterface (padIndex, 1.0f);
         }
     }
@@ -2188,6 +2870,10 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (auditioning)
+            processor.releasePadFromInterface (padIndex);
+
+        auditioning = false;
         draggingMarker = false;
         draggingOverview = false;
         activeMarker = Marker::none;
@@ -2196,6 +2882,34 @@ public:
     void mouseWheelMove (const juce::MouseEvent& event,
                          const juce::MouseWheelDetails& wheel) override
     {
+        const auto waveformBounds = getWaveformBounds();
+
+        if (processor.getPadSample (padIndex) != nullptr
+            && waveformBounds.contains (event.position)
+            && std::abs (wheel.deltaX) > std::abs (wheel.deltaY))
+        {
+            float horizontalMovement = wheel.deltaX;
+
+            if (wheel.isReversed)
+                horizontalMovement = -horizontalMovement;
+
+            const float viewLength = viewEnd - viewStart;
+
+            if (viewLength < 0.995f && horizontalMovement != 0.0f)
+            {
+                const float direction = horizontalMovement < 0.0f
+                                          ? 1.0f : -1.0f;
+                const float nudge = juce::jmax (0.0025f,
+                                                viewLength * 0.06f);
+                viewStart = juce::jlimit (0.0f, 1.0f - viewLength,
+                                          viewStart + direction * nudge);
+                viewEnd = viewStart + viewLength;
+                repaint();
+            }
+
+            return;
+        }
+
         const auto valueMarker = markerValueAt (event.position);
 
         if (valueMarker != Marker::none && wheel.deltaY != 0.0f)
@@ -2205,7 +2919,7 @@ public:
             return;
         }
 
-        const auto bounds = getWaveformBounds();
+        const auto bounds = waveformBounds;
 
         if (processor.getPadSample (padIndex) == nullptr
             || wheel.deltaY == 0.0f
@@ -2248,7 +2962,11 @@ private:
     juce::Rectangle<float> getMarkerHeaderBounds() const
     {
         auto area = getLocalBounds().toFloat().reduced (8.0f);
-        return area.removeFromTop (markerHeaderHeight);
+        auto header = area.removeFromTop (markerHeaderHeight);
+        header.removeFromLeft (juce::jmin (
+            markerHeaderLeftInset,
+            juce::jmax (0.0f, header.getWidth() - 420.0f)));
+        return header;
     }
 
     juce::Rectangle<float> markerSettingBounds (Marker marker) const
@@ -2402,6 +3120,8 @@ private:
                                 / juce::jmax (1.0, sample.sourceSampleRate * tuneRatio)
                                 * 1000.0;
         const double attackMs = processor.getPadAmpAttackMs (padIndex);
+        const float attackCurve = juce::jlimit (
+            -1.0f, 1.0f, processor.getPadAmpCurve (padIndex));
         const double decayMs = processor.getPadAmpDecayMs (padIndex);
         const double releaseMs = processor.getPadAmpReleaseMs (padIndex);
         const float sustain = juce::jlimit (
@@ -2441,7 +3161,25 @@ private:
         const auto releasePoint = envelopePoint (1.0f, 0.0f);
         juce::Path envelope;
         envelope.startNewSubPath (startPoint);
-        envelope.lineTo (attackPoint);
+
+        if (attackMs > 0.0 && attackEnd > 0.0f)
+        {
+            constexpr int curveSegments = 40;
+
+            for (int segment = 1; segment <= curveSegments; ++segment)
+            {
+                const float phase = static_cast<float> (segment)
+                                  / static_cast<float> (curveSegments);
+                envelope.lineTo (envelopePoint (
+                    attackEnd * phase,
+                    shapeAttackPhase (phase, attackCurve)));
+            }
+        }
+        else
+        {
+            envelope.lineTo (attackPoint);
+        }
+
         envelope.lineTo (decayPoint);
         envelope.lineTo (sustainPoint);
         envelope.lineTo (releasePoint);
@@ -2706,7 +3444,9 @@ private:
     float viewStart = 0.0f;
     float viewEnd = 1.0f;
     float overviewDragOffset = 0.5f;
+    float markerHeaderLeftInset = 0.0f;
     Marker activeMarker = Marker::none;
+    bool auditioning = false;
     bool draggingMarker = false;
     bool draggingOverview = false;
 };
@@ -2717,6 +3457,9 @@ public:
     explicit SVDrummerPadSettingsPanel (SVDrummerAudioProcessor& owner)
         : processor (owner), waveformEditor (owner)
     {
+        configureSlider (curveSlider, curveLabel, "CURVE", -1.0, 1.0, 0.01);
+        configureSlider (panSlider, panLabel, "PAN", -1.0, 1.0, 0.01);
+        configureSlider (tuneSlider, tuneLabel, "TUNE", -24.0, 24.0, 0.01);
         configureSlider (chokeSlider, chokeLabel, "CHOKE", 0.0,
                          static_cast<double> (SVDrummerAudioProcessor::numberOfPads),
                          1.0);
@@ -2727,18 +3470,100 @@ public:
             return group <= 0 ? juce::String ("OFF") : juce::String (group);
         };
 
-        configureSlider (attackSlider, attackLabel, "ATTACK", 0.0, 2000.0, 1.0);
-        configureSlider (decaySlider, decayLabel, "DECAY", 0.0, 5000.0, 1.0);
-        configureSlider (sustainSlider, sustainLabel, "SUSTAIN", 0.0, 1.0, 0.01);
-        configureSlider (releaseSlider, releaseLabel, "RELEASE", 0.0, 5000.0, 1.0);
+        configureSlider (attackSlider, attackLabel, "A", 0.0, 2000.0, 1.0);
+        configureSlider (decaySlider, decayLabel, "D", 0.0, 5000.0, 1.0);
+        configureSlider (sustainSlider, sustainLabel, "S", 0.0, 1.0, 0.01);
+        configureSlider (releaseSlider, releaseLabel, "R", 0.0, 5000.0, 1.0);
+        configureSlider (filterCutoffSlider, filterCutoffLabel, "CUT",
+                         20.0, 20000.0, 1.0);
+        configureSlider (filterResonanceSlider, filterResonanceLabel, "RES",
+                         0.0, 1.0, 0.01);
+        configureSlider (filterDriveSlider, filterDriveLabel, "DRIVE",
+                         0.0, 24.0, 0.1);
+        configureComboBox (filterTypeBox, filterTypeLabel, "TYPE");
+        filterTypeBox.addItem ("LPF", 1);
+        filterTypeBox.addItem ("BPF", 2);
+        filterTypeBox.addItem ("HPF", 3);
+        filterTypeBox.addItem ("NOTCH", 7);
+        filterTypeBox.addItem ("COMB", 4);
+        filterTypeBox.addItem ("FORMANT", 5);
+        filterTypeBox.addItem ("LADDER", 6);
+        configureComboBox (filterSlopeBox, filterSlopeLabel, "SLOPE");
+        filterSlopeBox.addItem ("6 dB", 1);
+        filterSlopeBox.addItem ("12 dB", 2);
+        filterSlopeBox.addItem ("24 dB", 3);
+        filterSlopeBox.addItem ("48 dB", 4);
+        configureComboBox (outputBox, outputLabel, "OUTPUT");
+        outputBox.addItem ("MAIN", 1);
+
+        for (int output = 1;
+             output <= SVDrummerAudioProcessor::numberOfPadOutputBuses;
+             ++output)
+        {
+            outputBox.addItem (
+                SVDrummerAudioProcessor::getPadOutputBusName (output),
+                output + 1);
+        }
+
+        outputLabel.setJustificationType (juce::Justification::centredRight);
+        outputLabel.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+        configureSlider (highPassSlider, highPassLabel, "HPF",
+                         0.0, 2000.0, 1.0);
+        configureSlider (compressorThresholdSlider, compressorThresholdLabel,
+                         "THRESH", -60.0, 0.0, 0.1);
+        configureSlider (compressorRatioSlider, compressorRatioLabel,
+                         "RATIO", 1.0, 20.0, 0.1);
+        configureSlider (compressorAttackSlider, compressorAttackLabel,
+                         "ATTACK", 0.1, 100.0, 0.1);
+        configureSlider (compressorReleaseSlider, compressorReleaseLabel,
+                         "RELEASE", 10.0, 1000.0, 1.0);
+        configureSlider (compressorKneeSlider, compressorKneeLabel,
+                         "KNEE", 0.0, 24.0, 0.1);
+        configureSlider (saturationSlider, saturationLabel,
+                         "SAT", 0.0, 1.0, 0.01);
+        configureSlider (hardClipSlider, hardClipLabel,
+                         "HARD CLIP", 0.0, 1.0, 0.01);
+        curveSlider.setMouseDragSensitivity (320);
+        panSlider.setMouseDragSensitivity (320);
+        tuneSlider.setMouseDragSensitivity (400);
         attackSlider.setMouseDragSensitivity (450);
         decaySlider.setMouseDragSensitivity (450);
         sustainSlider.setMouseDragSensitivity (300);
         releaseSlider.setMouseDragSensitivity (450);
+        filterCutoffSlider.setMouseDragSensitivity (450);
+        filterResonanceSlider.setMouseDragSensitivity (300);
+        filterDriveSlider.setMouseDragSensitivity (300);
+        highPassSlider.setMouseDragSensitivity (400);
+        compressorThresholdSlider.setMouseDragSensitivity (400);
+        compressorRatioSlider.setMouseDragSensitivity (320);
+        compressorAttackSlider.setMouseDragSensitivity (400);
+        compressorReleaseSlider.setMouseDragSensitivity (450);
+        compressorKneeSlider.setMouseDragSensitivity (320);
+        saturationSlider.setMouseDragSensitivity (320);
+        hardClipSlider.setMouseDragSensitivity (320);
+        curveSlider.setWheelStep (0.02);
+        panSlider.setWheelStep (0.01);
+        tuneSlider.setWheelStep (0.1);
         attackSlider.setWheelStep (5.0);
         decaySlider.setWheelStep (10.0);
         sustainSlider.setWheelStep (0.01);
         releaseSlider.setWheelStep (10.0);
+        filterCutoffSlider.setWheelStep (20.0);
+        filterResonanceSlider.setWheelStep (0.01);
+        filterDriveSlider.setWheelStep (0.1);
+        highPassSlider.setWheelStep (5.0);
+        compressorThresholdSlider.setWheelStep (0.5);
+        compressorRatioSlider.setWheelStep (0.1);
+        compressorAttackSlider.setWheelStep (0.5);
+        compressorReleaseSlider.setWheelStep (5.0);
+        compressorKneeSlider.setWheelStep (0.5);
+        saturationSlider.setWheelStep (0.01);
+        hardClipSlider.setWheelStep (0.01);
+        filterCutoffSlider.setSkewFactorFromMidPoint (1000.0);
+        highPassSlider.setSkewFactorFromMidPoint (180.0);
+        compressorRatioSlider.setSkewFactorFromMidPoint (4.0);
+        compressorAttackSlider.setSkewFactorFromMidPoint (10.0);
+        compressorReleaseSlider.setSkewFactorFromMidPoint (100.0);
 
         const auto formatEnvelopeTime = [] (double value)
         {
@@ -2751,14 +3576,118 @@ public:
         attackSlider.textFromValueFunction = formatEnvelopeTime;
         decaySlider.textFromValueFunction = formatEnvelopeTime;
         releaseSlider.textFromValueFunction = formatEnvelopeTime;
+        curveSlider.textFromValueFunction = [] (double value)
+        {
+            if (std::abs (value) < 0.005)
+                return juce::String ("0.00");
+
+            return (value > 0.0 ? juce::String ("+") : juce::String())
+                 + juce::String (value, 2);
+        };
+        panSlider.textFromValueFunction = [] (double value)
+        {
+            if (std::abs (value) < 0.005)
+                return juce::String ("C");
+
+            return value < 0.0 ? "L " + juce::String (std::abs (value), 2)
+                               : "R " + juce::String (value, 2);
+        };
+        tuneSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, 1) + " st";
+        };
         sustainSlider.textFromValueFunction = [] (double value)
         {
             return juce::String (juce::roundToInt (value * 100.0)) + "%";
         };
+        const auto formatFilterFrequency = [] (double value)
+        {
+            if (value < 1.0)
+                return juce::String ("OFF");
+
+            if (value >= 1000.0)
+                return juce::String (value / 1000.0,
+                                     value >= 10000.0 ? 1 : 2) + " kHz";
+
+            return juce::String (juce::roundToInt (value)) + " Hz";
+        };
+        filterCutoffSlider.textFromValueFunction = formatFilterFrequency;
+        filterResonanceSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (juce::roundToInt (value * 100.0)) + "%";
+        };
+        filterDriveSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, 1) + " dB";
+        };
+        highPassSlider.textFromValueFunction = formatFilterFrequency;
+        compressorThresholdSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, 1) + " dB";
+        };
+        compressorRatioSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, 1) + ":1";
+        };
+        compressorAttackSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, value < 10.0 ? 1 : 0) + " ms";
+        };
+        compressorReleaseSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (juce::roundToInt (value)) + " ms";
+        };
+        compressorKneeSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, 1) + " dB";
+        };
+        saturationSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (juce::roundToInt (value * 100.0)) + "%";
+        };
+        hardClipSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (juce::roundToInt (value * 100.0)) + "%";
+        };
+        curveSlider.updateText();
+        panSlider.updateText();
+        tuneSlider.updateText();
         attackSlider.updateText();
         decaySlider.updateText();
         sustainSlider.updateText();
         releaseSlider.updateText();
+        filterCutoffSlider.updateText();
+        filterResonanceSlider.updateText();
+        filterDriveSlider.updateText();
+        highPassSlider.updateText();
+        compressorThresholdSlider.updateText();
+        compressorRatioSlider.updateText();
+        compressorAttackSlider.updateText();
+        compressorReleaseSlider.updateText();
+        compressorKneeSlider.updateText();
+        saturationSlider.updateText();
+        hardClipSlider.updateText();
+        curveSlider.onValueChange = [this]
+        {
+            if (! updating)
+            {
+                processor.setPadAmpCurve (
+                    padIndex, static_cast<float> (curveSlider.getValue()));
+                waveformEditor.repaint();
+            }
+        };
+        panSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadPan (
+                    padIndex, static_cast<float> (panSlider.getValue()));
+        };
+        tuneSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadTuneSemitones (
+                    padIndex, static_cast<float> (tuneSlider.getValue()));
+        };
         chokeSlider.onValueChange = [this]
         {
             if (! updating)
@@ -2801,6 +3730,123 @@ public:
                 waveformEditor.repaint();
             }
         };
+        filterCutoffSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadFilterCutoffHz (
+                    padIndex,
+                    static_cast<float> (filterCutoffSlider.getValue()));
+        };
+        filterResonanceSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadFilterResonance (
+                    padIndex,
+                    static_cast<float> (filterResonanceSlider.getValue()));
+        };
+        filterDriveSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadFilterDriveDb (
+                    padIndex,
+                    static_cast<float> (filterDriveSlider.getValue()));
+        };
+        filterTypeBox.onChange = [this]
+        {
+            if (! updating)
+                processor.setPadFilterType (
+                    padIndex,
+                    static_cast<SVDrummerAudioProcessor::PadFilterType> (
+                        juce::jlimit (1, 7,
+                                      filterTypeBox.getSelectedId())));
+        };
+        filterSlopeBox.onChange = [this]
+        {
+            if (! updating)
+                processor.setPadFilterSlopeIndex (
+                    padIndex, filterSlopeBox.getSelectedId() - 1);
+        };
+        outputBox.onChange = [this]
+        {
+            if (! updating)
+                processor.setPadOutputBus (
+                    padIndex, outputBox.getSelectedId() - 1);
+        };
+        highPassSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadHighPassCutoffHz (
+                    padIndex,
+                    static_cast<float> (highPassSlider.getValue()));
+        };
+        compressorThresholdSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadCompressorThresholdDb (
+                    padIndex,
+                    static_cast<float> (compressorThresholdSlider.getValue()));
+        };
+        compressorRatioSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadCompressorRatio (
+                    padIndex,
+                    static_cast<float> (compressorRatioSlider.getValue()));
+        };
+        compressorAttackSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadCompressorAttackMs (
+                    padIndex,
+                    static_cast<float> (compressorAttackSlider.getValue()));
+        };
+        compressorReleaseSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadCompressorReleaseMs (
+                    padIndex,
+                    static_cast<float> (compressorReleaseSlider.getValue()));
+        };
+        compressorKneeSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadCompressorKneeDb (
+                    padIndex,
+                    static_cast<float> (compressorKneeSlider.getValue()));
+        };
+        saturationSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadSaturationAmount (
+                    padIndex,
+                    static_cast<float> (saturationSlider.getValue()));
+        };
+        hardClipSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadSaturationHardClipAmount (
+                    padIndex,
+                    static_cast<float> (hardClipSlider.getValue()));
+        };
+
+        filterEnableButton.onClick = [this]
+        {
+            if (! updating)
+                processor.setPadFilterEnabled (
+                    padIndex, filterEnableButton.getToggleState());
+        };
+        compressorButton.onClick = [this]
+        {
+            if (! updating)
+                processor.setPadCompressorEnabled (
+                    padIndex, compressorButton.getToggleState());
+        };
+        saturationEnableButton.onClick = [this]
+        {
+            if (! updating)
+                processor.setPadSaturationEnabled (
+                    padIndex, saturationEnableButton.getToggleState());
+        };
 
         reverseButton.setClickingTogglesState (true);
         reverseButton.setColour (juce::TextButton::buttonColourId,
@@ -2834,11 +3880,29 @@ public:
                 waveformEditor.repaint();
             }
         };
+        loopModeButton.setClickingTogglesState (false);
+        loopModeButton.setColour (juce::TextButton::buttonColourId,
+                                  raisedPanelColour.darker (0.18f));
+        loopModeButton.setColour (juce::TextButton::textColourOffId,
+                                  mutedTextColour.brighter (0.12f));
+        loopModeButton.onClick = [this]
+        {
+            if (updating)
+                return;
+
+            const auto nextMode =
+                processor.getPadLoopMode (padIndex)
+                    == SVDrummerAudioProcessor::PadLoopMode::normal
+                ? SVDrummerAudioProcessor::PadLoopMode::pingPong
+                : SVDrummerAudioProcessor::PadLoopMode::normal;
+            processor.setPadLoopMode (padIndex, nextMode);
+            syncFromProcessor();
+        };
         snapButton.setClickingTogglesState (true);
         snapButton.setColour (juce::TextButton::buttonColourId,
                               raisedPanelColour.darker (0.18f));
         snapButton.setColour (juce::TextButton::buttonOnColourId,
-                              loopMarkerColour.darker (0.42f));
+                              snapMarkerColour.darker (0.18f));
         snapButton.setColour (juce::TextButton::textColourOffId,
                               mutedTextColour);
         snapButton.setColour (juce::TextButton::textColourOnId,
@@ -2887,7 +3951,11 @@ public:
         addAndMakeVisible (waveformEditor);
         addAndMakeVisible (reverseButton);
         addAndMakeVisible (loopButton);
+        addAndMakeVisible (loopModeButton);
         addAndMakeVisible (snapButton);
+        addAndMakeVisible (filterEnableButton);
+        addAndMakeVisible (compressorButton);
+        addAndMakeVisible (saturationEnableButton);
         addAndMakeVisible (clearButton);
 
         titleLabel.setColour (juce::Label::textColourId, textColour);
@@ -2897,6 +3965,7 @@ public:
         pathLabel.setJustificationType (juce::Justification::centredRight);
         pathLabel.setFont (juce::FontOptions (10.5f));
         pathLabel.setMinimumHorizontalScale (0.55f);
+        waveformEditor.setMarkerHeaderLeftInset (360.0f);
 
         setPadIndex (0);
     }
@@ -2914,8 +3983,15 @@ public:
     {
         const juce::ScopedValueSetter<bool> setter (updating, true);
         refreshPatternResetValues();
+        curveSlider.setValue (processor.getPadAmpCurve (padIndex),
+                              juce::dontSendNotification);
+        panSlider.setValue (processor.getPadPan (padIndex),
+                            juce::dontSendNotification);
+        tuneSlider.setValue (processor.getPadTuneSemitones (padIndex),
+                             juce::dontSendNotification);
         chokeSlider.setValue (processor.getPadChokeGroup (padIndex),
                               juce::dontSendNotification);
+        chokeSlider.updateText();
         attackSlider.setValue (processor.getPadAmpAttackMs (padIndex),
                                juce::dontSendNotification);
         decaySlider.setValue (processor.getPadAmpDecayMs (padIndex),
@@ -2924,10 +4000,72 @@ public:
                                 juce::dontSendNotification);
         releaseSlider.setValue (processor.getPadAmpReleaseMs (padIndex),
                                 juce::dontSendNotification);
+        filterCutoffSlider.setValue (
+            processor.getPadFilterCutoffHz (padIndex),
+            juce::dontSendNotification);
+        filterResonanceSlider.setValue (
+            processor.getPadFilterResonance (padIndex),
+            juce::dontSendNotification);
+        filterDriveSlider.setValue (
+            processor.getPadFilterDriveDb (padIndex),
+            juce::dontSendNotification);
+        if (! filterTypeBox.isPopupActive())
+            filterTypeBox.setSelectedId (
+                static_cast<int> (processor.getPadFilterType (padIndex)),
+                juce::dontSendNotification);
+        if (! filterSlopeBox.isPopupActive())
+            filterSlopeBox.setSelectedId (
+                processor.getPadFilterSlopeIndex (padIndex) + 1,
+                juce::dontSendNotification);
+        if (! outputBox.isPopupActive())
+            outputBox.setSelectedId (
+                processor.getPadOutputBus (padIndex) + 1,
+                juce::dontSendNotification);
+        highPassSlider.setValue (
+            processor.getPadHighPassCutoffHz (padIndex),
+            juce::dontSendNotification);
+        compressorThresholdSlider.setValue (
+            processor.getPadCompressorThresholdDb (padIndex),
+            juce::dontSendNotification);
+        compressorRatioSlider.setValue (
+            processor.getPadCompressorRatio (padIndex),
+            juce::dontSendNotification);
+        compressorAttackSlider.setValue (
+            processor.getPadCompressorAttackMs (padIndex),
+            juce::dontSendNotification);
+        compressorReleaseSlider.setValue (
+            processor.getPadCompressorReleaseMs (padIndex),
+            juce::dontSendNotification);
+        compressorKneeSlider.setValue (
+            processor.getPadCompressorKneeDb (padIndex),
+            juce::dontSendNotification);
+        saturationSlider.setValue (
+            processor.getPadSaturationAmount (padIndex),
+            juce::dontSendNotification);
+        hardClipSlider.setValue (
+            processor.getPadSaturationHardClipAmount (padIndex),
+            juce::dontSendNotification);
+        filterEnableButton.setToggleState (
+            processor.isPadFilterEnabled (padIndex),
+            juce::dontSendNotification);
+        compressorButton.setToggleState (
+            processor.isPadCompressorEnabled (padIndex),
+            juce::dontSendNotification);
+        saturationEnableButton.setToggleState (
+            processor.isPadSaturationEnabled (padIndex),
+            juce::dontSendNotification);
         reverseButton.setToggleState (processor.isPadReversed (padIndex),
                                       juce::dontSendNotification);
         loopButton.setToggleState (processor.isPadLoopEnabled (padIndex),
                                    juce::dontSendNotification);
+        const auto loopMode = processor.getPadLoopMode (padIndex);
+        loopModeButton.setButtonText (
+            SVDrummerAudioProcessor::getPadLoopModeName (loopMode));
+        loopModeButton.setColour (
+            juce::TextButton::buttonColourId,
+            loopMode == SVDrummerAudioProcessor::PadLoopMode::pingPong
+                ? loopMarkerColour.darker (0.38f)
+                : raisedPanelColour.darker (0.18f));
         snapButton.setToggleState (processor.isSampleMarkerSnapEnabled(),
                                    juce::dontSendNotification);
 
@@ -2940,6 +4078,7 @@ public:
                            juce::dontSendNotification);
         clearButton.setEnabled (path.isNotEmpty());
         loopButton.setEnabled (path.isNotEmpty());
+        loopModeButton.setEnabled (path.isNotEmpty());
         waveformEditor.repaint();
     }
 
@@ -2954,47 +4093,181 @@ public:
         g.setColour (getPadColour (padIndex));
         g.fillRoundedRectangle (strip, 2.0f);
 
-        auto footer = getLocalBounds().reduced (14).removeFromBottom (24);
-        g.setColour (mutedTextColour);
-        g.setFont (10.5f);
-        g.drawText ("Drag markers or wheel their sample boxes. SNAP uses zero crossings; double-click resets.",
-                    footer, juce::Justification::centredLeft, true);
+        const auto drawSectionTitle = [&g] (const juce::String& text,
+                                            juce::Rectangle<int> bounds)
+        {
+            g.setColour (textColour);
+            g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+            g.drawFittedText (text,
+                              bounds.removeFromTop (18).reduced (4, 0),
+                              juce::Justification::centredLeft,
+                              1, 0.78f);
+        };
+
+        drawSectionTitle ("AMP", ampSectionBounds);
+        drawSectionTitle ("FILTER", filterSectionBounds);
+        drawSectionTitle ("COMPRESSOR", compressorSectionBounds);
+        drawSectionTitle ("SATURATION", saturationSectionBounds);
+
+        g.setColour (lineColour.withAlpha (0.82f));
+
+        for (const float x : {
+                 (static_cast<float> (ampSectionBounds.getRight())
+                    + static_cast<float> (filterSectionBounds.getX())) * 0.5f,
+                 (static_cast<float> (filterSectionBounds.getRight())
+                    + static_cast<float> (compressorSectionBounds.getX())) * 0.5f,
+                 (static_cast<float> (compressorSectionBounds.getRight())
+                    + static_cast<float> (saturationSectionBounds.getX())) * 0.5f })
+        {
+            g.drawLine (x, static_cast<float> (controlsBounds.getY()),
+                        x, static_cast<float> (controlsBounds.getBottom()), 1.0f);
+        }
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (loopButton.getBounds().isEmpty()
+            || loopModeButton.getBounds().isEmpty())
+            return;
+
+        const float y = static_cast<float> (
+            loopButton.getBounds().getCentreY());
+        g.setColour (lineColour);
+        g.drawLine (static_cast<float> (loopButton.getRight()), y,
+                    static_cast<float> (loopModeButton.getX()), y,
+                    1.0f);
     }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced (16);
+        auto area = getLocalBounds().reduced (16, 10);
         auto titleRow = area.removeFromTop (26);
         const int titleWidth = juce::jlimit (
-            230, 360, static_cast<int> (titleRow.getWidth() * 0.45f));
+            220, 330, static_cast<int> (titleRow.getWidth() * 0.38f));
         titleLabel.setBounds (titleRow.removeFromLeft (titleWidth));
         titleRow.removeFromLeft (8);
+        auto outputControls = titleRow.removeFromLeft (140);
+        outputControls.translate (0, -2);
+        outputLabel.setBounds (outputControls.removeFromLeft (52));
+        outputBox.setBounds (
+            outputControls.removeFromLeft (88).withSizeKeepingCentre (88, 24));
+        titleRow.removeFromLeft (10);
         clearButton.setBounds (titleRow.removeFromRight (24).reduced (1));
         titleRow.removeFromRight (5);
         pathLabel.setBounds (titleRow);
-        area.removeFromTop (6);
-        area.removeFromBottom (28);
+        area.removeFromTop (4);
 
-        auto controls = area.removeFromBottom (66);
-        area.removeFromBottom (6);
+        controlsBounds = area.removeFromBottom (158);
+        area.removeFromBottom (8);
         waveformEditor.setBounds (area);
 
-        layoutKnob (chokeLabel, chokeSlider, controls.removeFromLeft (58));
-        controls.removeFromLeft (4);
-        layoutKnob (attackLabel, attackSlider, controls.removeFromLeft (58));
-        controls.removeFromLeft (4);
-        layoutKnob (decayLabel, decaySlider, controls.removeFromLeft (58));
-        controls.removeFromLeft (4);
-        layoutKnob (sustainLabel, sustainSlider, controls.removeFromLeft (58));
-        controls.removeFromLeft (4);
-        layoutKnob (releaseLabel, releaseSlider, controls.removeFromLeft (58));
-        controls.removeFromLeft (8);
+        auto waveformHeaderButtons = juce::Rectangle<int> (
+            area.getX() + 8, area.getY() + 8, 354, 24);
+        reverseButton.setBounds (
+            waveformHeaderButtons.removeFromLeft (92)
+                                 .withSizeKeepingCentre (88, 24));
+        waveformHeaderButtons.removeFromLeft (6);
+        loopButton.setBounds (
+            waveformHeaderButtons.removeFromLeft (72)
+                                 .withSizeKeepingCentre (68, 24));
+        waveformHeaderButtons.removeFromLeft (6);
+        loopModeButton.setBounds (
+            waveformHeaderButtons.removeFromLeft (100)
+                                 .withSizeKeepingCentre (96, 24));
+        waveformHeaderButtons.removeFromLeft (6);
+        snapButton.setBounds (
+            waveformHeaderButtons.removeFromLeft (72)
+                                 .withSizeKeepingCentre (68, 24));
 
-        reverseButton.setBounds (controls.removeFromLeft (92).withSizeKeepingCentre (88, 24));
-        controls.removeFromLeft (6);
-        loopButton.setBounds (controls.removeFromLeft (72).withSizeKeepingCentre (68, 24));
-        controls.removeFromLeft (6);
-        snapButton.setBounds (controls.removeFromLeft (72).withSizeKeepingCentre (68, 24));
+        constexpr int sectionGap = 14;
+        auto sectionLayout = controlsBounds;
+        const int usableWidth = sectionLayout.getWidth() - sectionGap * 3;
+        const int ampWidth = usableWidth * 4 / 11;
+        const int filterWidth = usableWidth * 3 / 11;
+        const int compressorWidth = usableWidth * 3 / 11;
+        ampSectionBounds = sectionLayout.removeFromLeft (ampWidth);
+        sectionLayout.removeFromLeft (sectionGap);
+        filterSectionBounds = sectionLayout.removeFromLeft (filterWidth);
+        sectionLayout.removeFromLeft (sectionGap);
+        compressorSectionBounds = sectionLayout.removeFromLeft (compressorWidth);
+        sectionLayout.removeFromLeft (sectionGap);
+        saturationSectionBounds = sectionLayout;
+
+        const auto ledBoundsFor = [] (juce::Rectangle<int> section)
+        {
+            return juce::Rectangle<int> (section.getRight() - 18,
+                                         section.getY() + 1, 14, 14);
+        };
+        filterEnableButton.setBounds (ledBoundsFor (filterSectionBounds));
+        compressorButton.setBounds (ledBoundsFor (compressorSectionBounds));
+        saturationEnableButton.setBounds (
+            saturationSectionBounds.getRight() + 1,
+            saturationSectionBounds.getY() + 1, 14, 14);
+
+        const auto makeRows = [] (juce::Rectangle<int> section)
+        {
+            section.removeFromTop (18);
+            section.reduce (2, 0);
+            constexpr int rowGap = 10;
+            const int rowHeight = (section.getHeight() - rowGap) / 2;
+            std::array<juce::Rectangle<int>, 2> rows;
+            rows[0] = section.removeFromTop (rowHeight);
+            section.removeFromTop (rowGap);
+            rows[1] = section;
+            return rows;
+        };
+
+        const auto cellFor = [] (juce::Rectangle<int> row,
+                                 int column, int columns)
+        {
+            const int left = row.getX() + row.getWidth() * column / columns;
+            const int right = row.getX()
+                            + row.getWidth() * (column + 1) / columns;
+            return juce::Rectangle<int> (left, row.getY(), right - left,
+                                         row.getHeight()).reduced (3, 0);
+        };
+
+        const auto ampRows = makeRows (ampSectionBounds);
+        layoutKnob (attackLabel, attackSlider, cellFor (ampRows[0], 0, 4));
+        layoutKnob (decayLabel, decaySlider, cellFor (ampRows[0], 1, 4));
+        layoutKnob (sustainLabel, sustainSlider, cellFor (ampRows[0], 2, 4));
+        layoutKnob (releaseLabel, releaseSlider, cellFor (ampRows[0], 3, 4));
+        layoutKnob (curveLabel, curveSlider, cellFor (ampRows[1], 0, 4));
+        layoutKnob (panLabel, panSlider, cellFor (ampRows[1], 1, 4));
+        layoutKnob (tuneLabel, tuneSlider, cellFor (ampRows[1], 2, 4));
+        layoutKnob (chokeLabel, chokeSlider, cellFor (ampRows[1], 3, 4));
+
+        const auto filterRows = makeRows (filterSectionBounds);
+        layoutKnob (filterCutoffLabel, filterCutoffSlider,
+                    cellFor (filterRows[0], 0, 3));
+        layoutKnob (filterResonanceLabel, filterResonanceSlider,
+                    cellFor (filterRows[0], 1, 3));
+        layoutKnob (filterDriveLabel, filterDriveSlider,
+                    cellFor (filterRows[0], 2, 3));
+        layoutCombo (filterTypeLabel, filterTypeBox,
+                     cellFor (filterRows[1], 0, 3));
+        layoutCombo (filterSlopeLabel, filterSlopeBox,
+                     cellFor (filterRows[1], 1, 3));
+        layoutKnob (highPassLabel, highPassSlider,
+                    cellFor (filterRows[1], 2, 3));
+
+        const auto compressorRows = makeRows (compressorSectionBounds);
+        layoutKnob (compressorThresholdLabel, compressorThresholdSlider,
+                    cellFor (compressorRows[0], 0, 3));
+        layoutKnob (compressorRatioLabel, compressorRatioSlider,
+                    cellFor (compressorRows[0], 1, 3));
+        layoutKnob (compressorKneeLabel, compressorKneeSlider,
+                    cellFor (compressorRows[0], 2, 3));
+        layoutKnob (compressorAttackLabel, compressorAttackSlider,
+                    cellFor (compressorRows[1], 0, 3));
+        layoutKnob (compressorReleaseLabel, compressorReleaseSlider,
+                    cellFor (compressorRows[1], 1, 3));
+
+        const auto saturationRows = makeRows (saturationSectionBounds);
+        layoutKnob (saturationLabel, saturationSlider,
+                    cellFor (saturationRows[0], 0, 1));
+        layoutKnob (hardClipLabel, hardClipSlider,
+                    cellFor (saturationRows[1], 0, 1));
     }
 
 private:
@@ -3008,6 +4281,12 @@ private:
                  index < SVDrummerAudioProcessor::numberOfPads;
                  ++index)
             {
+                resetAmpCurves[static_cast<std::size_t> (index)]
+                    = processor.getPadAmpCurve (index);
+                resetPadPans[static_cast<std::size_t> (index)]
+                    = processor.getPadPan (index);
+                resetPadTunes[static_cast<std::size_t> (index)]
+                    = processor.getPadTuneSemitones (index);
                 resetChokeGroups[static_cast<std::size_t> (index)]
                     = processor.getPadChokeGroup (index);
                 resetAttacks[static_cast<std::size_t> (index)]
@@ -3018,11 +4297,39 @@ private:
                     = processor.getPadAmpSustain (index);
                 resetReleases[static_cast<std::size_t> (index)]
                     = processor.getPadAmpReleaseMs (index);
+                resetFilterCutoffs[static_cast<std::size_t> (index)]
+                    = processor.getPadFilterCutoffHz (index);
+                resetFilterResonances[static_cast<std::size_t> (index)]
+                    = processor.getPadFilterResonance (index);
+                resetFilterDrives[static_cast<std::size_t> (index)]
+                    = processor.getPadFilterDriveDb (index);
+                resetHighPassCutoffs[static_cast<std::size_t> (index)]
+                    = processor.getPadHighPassCutoffHz (index);
+                resetCompressorThresholds[static_cast<std::size_t> (index)]
+                    = processor.getPadCompressorThresholdDb (index);
+                resetCompressorRatios[static_cast<std::size_t> (index)]
+                    = processor.getPadCompressorRatio (index);
+                resetCompressorAttacks[static_cast<std::size_t> (index)]
+                    = processor.getPadCompressorAttackMs (index);
+                resetCompressorReleases[static_cast<std::size_t> (index)]
+                    = processor.getPadCompressorReleaseMs (index);
+                resetCompressorKnees[static_cast<std::size_t> (index)]
+                    = processor.getPadCompressorKneeDb (index);
+                resetSaturationAmounts[static_cast<std::size_t> (index)]
+                    = processor.getPadSaturationAmount (index);
+                resetHardClipAmounts[static_cast<std::size_t> (index)]
+                    = processor.getPadSaturationHardClipAmount (index);
             }
 
             resetValuesRevision = revision;
         }
 
+        curveSlider.setDoubleClickReturnValue (
+            true, resetAmpCurves[static_cast<std::size_t> (padIndex)]);
+        panSlider.setDoubleClickReturnValue (
+            true, resetPadPans[static_cast<std::size_t> (padIndex)]);
+        tuneSlider.setDoubleClickReturnValue (
+            true, resetPadTunes[static_cast<std::size_t> (padIndex)]);
         chokeSlider.setDoubleClickReturnValue (
             true, resetChokeGroups[static_cast<std::size_t> (padIndex)]);
         attackSlider.setDoubleClickReturnValue (
@@ -3033,6 +4340,28 @@ private:
             true, resetSustains[static_cast<std::size_t> (padIndex)]);
         releaseSlider.setDoubleClickReturnValue (
             true, resetReleases[static_cast<std::size_t> (padIndex)]);
+        filterCutoffSlider.setDoubleClickReturnValue (
+            true, resetFilterCutoffs[static_cast<std::size_t> (padIndex)]);
+        filterResonanceSlider.setDoubleClickReturnValue (
+            true, resetFilterResonances[static_cast<std::size_t> (padIndex)]);
+        filterDriveSlider.setDoubleClickReturnValue (
+            true, resetFilterDrives[static_cast<std::size_t> (padIndex)]);
+        highPassSlider.setDoubleClickReturnValue (
+            true, resetHighPassCutoffs[static_cast<std::size_t> (padIndex)]);
+        compressorThresholdSlider.setDoubleClickReturnValue (
+            true, resetCompressorThresholds[static_cast<std::size_t> (padIndex)]);
+        compressorRatioSlider.setDoubleClickReturnValue (
+            true, resetCompressorRatios[static_cast<std::size_t> (padIndex)]);
+        compressorAttackSlider.setDoubleClickReturnValue (
+            true, resetCompressorAttacks[static_cast<std::size_t> (padIndex)]);
+        compressorReleaseSlider.setDoubleClickReturnValue (
+            true, resetCompressorReleases[static_cast<std::size_t> (padIndex)]);
+        compressorKneeSlider.setDoubleClickReturnValue (
+            true, resetCompressorKnees[static_cast<std::size_t> (padIndex)]);
+        saturationSlider.setDoubleClickReturnValue (
+            true, resetSaturationAmounts[static_cast<std::size_t> (padIndex)]);
+        hardClipSlider.setDoubleClickReturnValue (
+            true, resetHardClipAmounts[static_cast<std::size_t> (padIndex)]);
     }
 
     void configureSlider (juce::Slider& slider,
@@ -3062,6 +4391,26 @@ private:
         addAndMakeVisible (label);
     }
 
+    void configureComboBox (juce::ComboBox& combo,
+                            juce::Label& label,
+                            const juce::String& labelText)
+    {
+        combo.setJustificationType (juce::Justification::centred);
+        combo.setColour (juce::ComboBox::backgroundColourId,
+                         raisedPanelColour.darker (0.12f));
+        combo.setColour (juce::ComboBox::textColourId,
+                         mutedTextColour.brighter (0.18f));
+        combo.setColour (juce::ComboBox::outlineColourId, lineColour);
+        combo.setColour (juce::ComboBox::arrowColourId,
+                         juce::Colour (0xff5fa3d1));
+        label.setText (labelText, juce::dontSendNotification);
+        label.setJustificationType (juce::Justification::centredTop);
+        label.setColour (juce::Label::textColourId, textColour);
+        label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        addAndMakeVisible (combo);
+        addAndMakeVisible (label);
+    }
+
     static void layoutKnob (juce::Label& label,
                             juce::Slider& slider,
                             juce::Rectangle<int> bounds)
@@ -3070,33 +4419,427 @@ private:
         slider.setBounds (bounds);
     }
 
+    static void layoutCombo (juce::Label& label,
+                             juce::ComboBox& combo,
+                             juce::Rectangle<int> bounds)
+    {
+        label.setBounds (bounds.removeFromTop (13));
+        combo.setBounds (bounds.withSizeKeepingCentre (
+            juce::jmax (50, bounds.getWidth()), 27));
+    }
+
     SVDrummerAudioProcessor& processor;
     SVDrummerWaveformEditor waveformEditor;
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetAmpCurves {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetPadPans {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetPadTunes {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetChokeGroups {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetAttacks {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetDecays {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetSustains {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetReleases {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetFilterCutoffs {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetFilterResonances {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetFilterDrives {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetHighPassCutoffs {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorThresholds {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorRatios {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorAttacks {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorReleases {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorKnees {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetSaturationAmounts {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetHardClipAmounts {};
     std::uint64_t resetValuesRevision =
         (std::numeric_limits<std::uint64_t>::max)();
     int padIndex = 0;
     bool updating = false;
     juce::Label titleLabel;
     juce::Label pathLabel;
+    juce::Label outputLabel;
+    juce::Label curveLabel;
+    juce::Label panLabel;
+    juce::Label tuneLabel;
     juce::Label chokeLabel;
     juce::Label attackLabel;
     juce::Label decayLabel;
     juce::Label sustainLabel;
     juce::Label releaseLabel;
+    juce::Label filterCutoffLabel;
+    juce::Label filterResonanceLabel;
+    juce::Label filterDriveLabel;
+    juce::Label filterTypeLabel;
+    juce::Label filterSlopeLabel;
+    juce::Label highPassLabel;
+    juce::Label compressorThresholdLabel;
+    juce::Label compressorRatioLabel;
+    juce::Label compressorAttackLabel;
+    juce::Label compressorReleaseLabel;
+    juce::Label compressorKneeLabel;
+    juce::Label saturationLabel;
+    juce::Label hardClipLabel;
+    SVDrummerEnvelopeSlider curveSlider;
+    SVDrummerEnvelopeSlider panSlider;
+    SVDrummerEnvelopeSlider tuneSlider;
     juce::Slider chokeSlider;
     SVDrummerEnvelopeSlider attackSlider;
     SVDrummerEnvelopeSlider decaySlider;
     SVDrummerEnvelopeSlider sustainSlider;
     SVDrummerEnvelopeSlider releaseSlider;
+    SVDrummerEnvelopeSlider filterCutoffSlider;
+    SVDrummerEnvelopeSlider filterResonanceSlider;
+    SVDrummerEnvelopeSlider filterDriveSlider;
+    SVDrummerWheelComboBox filterTypeBox;
+    SVDrummerWheelComboBox filterSlopeBox;
+    SVDrummerWheelComboBox outputBox;
+    SVDrummerEnvelopeSlider highPassSlider;
+    SVDrummerEnvelopeSlider compressorThresholdSlider;
+    SVDrummerEnvelopeSlider compressorRatioSlider;
+    SVDrummerEnvelopeSlider compressorAttackSlider;
+    SVDrummerEnvelopeSlider compressorReleaseSlider;
+    SVDrummerEnvelopeSlider compressorKneeSlider;
+    SVDrummerEnvelopeSlider saturationSlider;
+    SVDrummerEnvelopeSlider hardClipSlider;
     juce::TextButton reverseButton { "REVERSE" };
     juce::TextButton loopButton { "LOOP" };
+    juce::TextButton loopModeButton { "NORMAL" };
     juce::TextButton snapButton { "SNAP" };
+    SVDrummerLedButton filterEnableButton { "Filter on or off" };
+    SVDrummerLedButton compressorButton { "Compressor on or off" };
+    SVDrummerLedButton saturationEnableButton { "Saturation on or off" };
     juce::TextButton clearButton { "X" };
+    juce::Rectangle<int> controlsBounds;
+    juce::Rectangle<int> ampSectionBounds;
+    juce::Rectangle<int> filterSectionBounds;
+    juce::Rectangle<int> compressorSectionBounds;
+    juce::Rectangle<int> saturationSectionBounds;
+};
+
+class SVDrummerGlobalFxPanel final : public juce::Component
+{
+public:
+    explicit SVDrummerGlobalFxPanel (SVDrummerAudioProcessor& owner)
+        : processor (owner)
+    {
+        configureSlider (delayTimeSlider, delayTimeLabel, "TIME",
+                         1.0, 2000.0, 1.0);
+        configureSlider (delayFeedbackSlider, delayFeedbackLabel, "FEEDBACK",
+                         0.0, 0.95, 0.01);
+        configureSlider (delayMixSlider, delayMixLabel, "MIX",
+                         0.0, 1.0, 0.01);
+        configureSlider (reverbSizeSlider, reverbSizeLabel, "SIZE",
+                         0.0, 1.0, 0.01);
+        configureSlider (reverbDampingSlider, reverbDampingLabel, "DAMPING",
+                         0.0, 1.0, 0.01);
+        configureSlider (reverbWidthSlider, reverbWidthLabel, "WIDTH",
+                         0.0, 1.0, 0.01);
+        configureSlider (reverbMixSlider, reverbMixLabel, "MIX",
+                         0.0, 1.0, 0.01);
+
+        delayTimeSlider.setMouseDragSensitivity (500);
+
+        for (auto* slider : { &delayFeedbackSlider, &delayMixSlider,
+                              &reverbSizeSlider, &reverbDampingSlider,
+                              &reverbWidthSlider, &reverbMixSlider })
+        {
+            slider->setMouseDragSensitivity (320);
+            slider->setWheelStep (0.01);
+            slider->textFromValueFunction = [] (double value)
+            {
+                return juce::String (juce::roundToInt (value * 100.0)) + "%";
+            };
+            slider->updateText();
+        }
+
+        delayEnableButton.onClick = [this]
+        {
+            if (! updating)
+                processor.setGlobalDelayEnabled (
+                    delayEnableButton.getToggleState());
+        };
+        reverbEnableButton.onClick = [this]
+        {
+            if (! updating)
+                processor.setGlobalReverbEnabled (
+                    reverbEnableButton.getToggleState());
+        };
+        delaySyncButton.setClickingTogglesState (true);
+        delaySyncButton.setColour (juce::TextButton::buttonColourId,
+                                   raisedPanelColour.darker (0.18f));
+        delaySyncButton.setColour (juce::TextButton::buttonOnColourId,
+                                   juce::Colour (0xff3e536a));
+        delaySyncButton.setColour (juce::TextButton::textColourOffId,
+                                   mutedTextColour);
+        delaySyncButton.setColour (juce::TextButton::textColourOnId,
+                                   juce::Colours::white);
+        delaySyncButton.onClick = [this]
+        {
+            if (! updating)
+                processor.setGlobalDelaySyncEnabled (
+                    delaySyncButton.getToggleState());
+
+            syncFromProcessor();
+        };
+        delayTimeSlider.onValueChange = [this]
+        {
+            if (! updating)
+            {
+                if (processor.isGlobalDelaySyncEnabled())
+                    processor.setGlobalDelaySyncDivision (
+                        juce::roundToInt (delayTimeSlider.getValue()));
+                else
+                    processor.setGlobalDelayTimeMs (
+                        static_cast<float> (delayTimeSlider.getValue()));
+            }
+        };
+        delayFeedbackSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalDelayFeedback (
+                    static_cast<float> (delayFeedbackSlider.getValue()));
+        };
+        delayMixSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalDelayMix (
+                    static_cast<float> (delayMixSlider.getValue()));
+        };
+        reverbSizeSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalReverbSize (
+                    static_cast<float> (reverbSizeSlider.getValue()));
+        };
+        reverbDampingSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalReverbDamping (
+                    static_cast<float> (reverbDampingSlider.getValue()));
+        };
+        reverbWidthSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalReverbWidth (
+                    static_cast<float> (reverbWidthSlider.getValue()));
+        };
+        reverbMixSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalReverbMix (
+                    static_cast<float> (reverbMixSlider.getValue()));
+        };
+
+        addAndMakeVisible (delayEnableButton);
+        addAndMakeVisible (reverbEnableButton);
+        addAndMakeVisible (delaySyncButton);
+        syncFromProcessor();
+    }
+
+    void syncFromProcessor()
+    {
+        const juce::ScopedValueSetter<bool> setter (updating, true);
+        delayEnableButton.setToggleState (processor.isGlobalDelayEnabled(),
+                                          juce::dontSendNotification);
+        const bool syncEnabled = processor.isGlobalDelaySyncEnabled();
+        delaySyncButton.setToggleState (syncEnabled,
+                                        juce::dontSendNotification);
+        delaySyncButton.setButtonText (syncEnabled ? "SYNC" : "FREE");
+
+        if (syncEnabled != displayedDelaySyncMode)
+            configureDelayTimeMode (syncEnabled);
+
+        delayTimeSlider.setValue (
+            syncEnabled ? processor.getGlobalDelaySyncDivision()
+                        : processor.getGlobalDelayTimeMs(),
+            juce::dontSendNotification);
+        delayFeedbackSlider.setValue (processor.getGlobalDelayFeedback(),
+                                      juce::dontSendNotification);
+        delayMixSlider.setValue (processor.getGlobalDelayMix(),
+                                 juce::dontSendNotification);
+        reverbEnableButton.setToggleState (processor.isGlobalReverbEnabled(),
+                                           juce::dontSendNotification);
+        reverbSizeSlider.setValue (processor.getGlobalReverbSize(),
+                                   juce::dontSendNotification);
+        reverbDampingSlider.setValue (processor.getGlobalReverbDamping(),
+                                      juce::dontSendNotification);
+        reverbWidthSlider.setValue (processor.getGlobalReverbWidth(),
+                                    juce::dontSendNotification);
+        reverbMixSlider.setValue (processor.getGlobalReverbMix(),
+                                  juce::dontSendNotification);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (panelColour);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 5.0f);
+        g.setColour (lineColour);
+        g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (0.5f),
+                                5.0f, 1.0f);
+
+        const auto drawEffectPanel = [&g] (juce::Rectangle<int> bounds,
+                                            const juce::String& title)
+        {
+            g.setColour (raisedPanelColour.darker (0.20f));
+            g.fillRoundedRectangle (bounds.toFloat(), 4.0f);
+            g.setColour (lineColour.brighter (0.04f));
+            g.drawRoundedRectangle (bounds.toFloat().reduced (0.5f),
+                                    4.0f, 1.0f);
+            g.setColour (textColour);
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText (title, bounds.removeFromTop (28).reduced (12, 0),
+                        juce::Justification::centredLeft, false);
+        };
+
+        drawEffectPanel (delayPanelBounds, "DELAY");
+        drawEffectPanel (reverbPanelBounds, "REVERB");
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (14);
+        const int gap = 12;
+        const int panelWidth = (area.getWidth() - gap) / 2;
+        delayPanelBounds = area.removeFromLeft (panelWidth);
+        area.removeFromLeft (gap);
+        reverbPanelBounds = area;
+
+        delayEnableButton.setBounds (delayPanelBounds.getRight() - 28,
+                                     delayPanelBounds.getY() + 7, 14, 14);
+        reverbEnableButton.setBounds (reverbPanelBounds.getRight() - 28,
+                                      reverbPanelBounds.getY() + 7, 14, 14);
+
+        auto delayControls = delayPanelBounds.reduced (18, 16);
+        delayControls.removeFromTop (32);
+        const auto delayKnobRow = getKnobRowBounds (delayControls, 3);
+        layoutKnobRow (delayControls,
+                       { { &delayTimeLabel, &delayTimeSlider },
+                         { &delayFeedbackLabel, &delayFeedbackSlider },
+                         { &delayMixLabel, &delayMixSlider } });
+        delaySyncButton.setBounds (delayKnobRow.getX() - 63,
+                                   delayKnobRow.getY() + 23, 56, 22);
+
+        auto reverbControls = reverbPanelBounds.reduced (18, 16);
+        reverbControls.removeFromTop (32);
+        layoutKnobRow (reverbControls,
+                       { { &reverbSizeLabel, &reverbSizeSlider },
+                         { &reverbDampingLabel, &reverbDampingSlider },
+                         { &reverbWidthLabel, &reverbWidthSlider },
+                         { &reverbMixLabel, &reverbMixSlider } });
+    }
+
+private:
+    struct Knob
+    {
+        juce::Label* label;
+        juce::Slider* slider;
+    };
+
+    void configureDelayTimeMode (bool syncEnabled)
+    {
+        displayedDelaySyncMode = syncEnabled;
+
+        if (syncEnabled)
+        {
+            delayTimeSlider.setRange (0.0, 11.0, 1.0);
+            delayTimeSlider.setSkewFactor (1.0);
+            delayTimeSlider.setWheelStep (1.0);
+            delayTimeSlider.setDoubleClickReturnValue (true, 5.0);
+            delayTimeSlider.textFromValueFunction = [] (double value)
+            {
+                return SVDrummerAudioProcessor::getDelaySyncDivisionName (
+                    juce::roundToInt (value));
+            };
+        }
+        else
+        {
+            delayTimeSlider.setRange (1.0, 2000.0, 1.0);
+            delayTimeSlider.setSkewFactorFromMidPoint (250.0);
+            delayTimeSlider.setWheelStep (5.0);
+            delayTimeSlider.setDoubleClickReturnValue (true, 250.0);
+            delayTimeSlider.textFromValueFunction = [] (double value)
+            {
+                return juce::String (juce::roundToInt (value)) + " ms";
+            };
+        }
+
+        delayTimeSlider.updateText();
+    }
+
+    void configureSlider (SVDrummerEnvelopeSlider& slider,
+                          juce::Label& label,
+                          const juce::String& labelText,
+                          double minimum,
+                          double maximum,
+                          double interval)
+    {
+        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, true, 52, 14);
+        slider.setRange (minimum, maximum, interval);
+        slider.setColour (juce::Slider::rotarySliderFillColourId,
+                          juce::Colour (0xff5fa3d1));
+        slider.setColour (juce::Slider::textBoxTextColourId,
+                          mutedTextColour.brighter (0.18f));
+        slider.setColour (juce::Slider::textBoxBackgroundColourId,
+                          juce::Colours::transparentBlack);
+        slider.setColour (juce::Slider::textBoxOutlineColourId,
+                          juce::Colours::transparentBlack);
+        label.setText (labelText, juce::dontSendNotification);
+        label.setJustificationType (juce::Justification::centredTop);
+        label.setColour (juce::Label::textColourId, textColour);
+        label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        addAndMakeVisible (slider);
+        addAndMakeVisible (label);
+    }
+
+    static void layoutKnobRow (juce::Rectangle<int> bounds,
+                               std::initializer_list<Knob> knobs)
+    {
+        const int count = static_cast<int> (knobs.size());
+        auto row = getKnobRowBounds (bounds, count);
+
+        for (const auto& knob : knobs)
+        {
+            auto cell = row.removeFromLeft (66);
+            knob.label->setBounds (cell.removeFromTop (13));
+            knob.slider->setBounds (cell);
+            row.removeFromLeft (4);
+        }
+    }
+
+    static juce::Rectangle<int> getKnobRowBounds (
+        juce::Rectangle<int> bounds, int count)
+    {
+        constexpr int knobWidth = 66;
+        constexpr int knobHeight = 66;
+        constexpr int knobGap = 4;
+        const int rowWidth = knobWidth * count
+                           + knobGap * juce::jmax (0, count - 1);
+        return juce::Rectangle<int> (
+            rowWidth, knobHeight).withCentre (
+                { bounds.getCentreX(), bounds.getY() + knobHeight / 2 + 4 });
+    }
+
+    SVDrummerAudioProcessor& processor;
+    SVDrummerLedButton delayEnableButton { "Delay on or off" };
+    SVDrummerLedButton reverbEnableButton { "Reverb on or off" };
+    juce::TextButton delaySyncButton { "FREE" };
+    juce::Label delayTimeLabel;
+    juce::Label delayFeedbackLabel;
+    juce::Label delayMixLabel;
+    juce::Label reverbSizeLabel;
+    juce::Label reverbDampingLabel;
+    juce::Label reverbWidthLabel;
+    juce::Label reverbMixLabel;
+    SVDrummerEnvelopeSlider delayTimeSlider;
+    SVDrummerEnvelopeSlider delayFeedbackSlider;
+    SVDrummerEnvelopeSlider delayMixSlider;
+    SVDrummerEnvelopeSlider reverbSizeSlider;
+    SVDrummerEnvelopeSlider reverbDampingSlider;
+    SVDrummerEnvelopeSlider reverbWidthSlider;
+    SVDrummerEnvelopeSlider reverbMixSlider;
+    juce::Rectangle<int> delayPanelBounds;
+    juce::Rectangle<int> reverbPanelBounds;
+    bool displayedDelaySyncMode = true;
+    bool updating = false;
 };
 
 class SVDrummerTransportButton final : public juce::Button
@@ -3639,6 +5382,20 @@ public:
             syncFromProcessor();
         };
 
+        configureLabel (syncModeLabel, "SYNC MODE");
+        syncModeButton.setClickingTogglesState (false);
+        syncModeButton.setColour (juce::TextButton::textColourOffId,
+                                  juce::Colours::white);
+        syncModeButton.onClick = [this]
+        {
+            const int nextMode =
+                (static_cast<int> (processor.getPatternSyncMode()) + 1) % 3;
+            processor.setPatternSyncMode (
+                static_cast<SVDrummerAudioProcessor::PatternSyncMode> (
+                    nextMode));
+            syncFromProcessor();
+        };
+
         configureSequencerKnob (lengthSlider, 1.0,
                                 static_cast<double> (SVDrummerAudioProcessor::maximumPatternBars));
         lengthSlider.textFromValueFunction = [] (double value)
@@ -3714,7 +5471,10 @@ public:
 
         configureSequencerKnob (padVolumeSlider, -60.0, 6.0, 0.1);
         padVolumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-        padVolumeSlider.setTextValueSuffix (" dB");
+        padVolumeSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, 1) + " dB";
+        };
         padVolumeSlider.onValueChange = [this]
         {
             if (! updatingControls)
@@ -3743,7 +5503,10 @@ public:
 
         configureSequencerKnob (padTuneSlider, -24.0, 24.0, 0.01);
         padTuneSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-        padTuneSlider.setTextValueSuffix (" st");
+        padTuneSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, 1) + " st";
+        };
         padTuneSlider.onValueChange = [this]
         {
             if (! updatingControls)
@@ -3759,8 +5522,29 @@ public:
         configureLabel (padVolumeLabel, "PAD VOL");
         configureLabel (padPanLabel, "PAD PAN");
         configureLabel (padTuneLabel, "PAD TUNE");
+        configureLabel (padPlaybackModeLabel, "PAD MODE");
+        padPlaybackModeButton.setClickingTogglesState (false);
+        padPlaybackModeButton.setColour (
+            juce::TextButton::textColourOffId, juce::Colours::white);
+        padPlaybackModeButton.onClick = [this]
+        {
+            if (updatingControls)
+                return;
+
+            processor.setPadSequencerGated (
+                selectedLane,
+                ! processor.isPadSequencerGated (selectedLane));
+            syncLaneControls();
+        };
 
         patternMenuButton.onClick = [this] { showPatternMenu(); };
+        patternChainEnableButton.onClick = [this]
+        {
+            processor.setPatternPlaybackChainEnabled (
+                patternChainEnableButton.getToggleState());
+            syncFromProcessor();
+            repaint();
+        };
 
         laneButton.setInterceptsMouseClicks (false, false);
         laneButton.setColour (juce::TextButton::buttonColourId,
@@ -3777,6 +5561,8 @@ public:
         addAndMakeVisible (enableButton);
         addAndMakeVisible (midiModeLabel);
         addAndMakeVisible (midiModeButton);
+        addAndMakeVisible (syncModeLabel);
+        addAndMakeVisible (syncModeButton);
         addAndMakeVisible (lengthLabel);
         addAndMakeVisible (lengthSlider);
         addAndMakeVisible (viewLabel);
@@ -3792,8 +5578,11 @@ public:
         addAndMakeVisible (padPanSlider);
         addAndMakeVisible (padTuneLabel);
         addAndMakeVisible (padTuneSlider);
+        addAndMakeVisible (padPlaybackModeLabel);
+        addAndMakeVisible (padPlaybackModeButton);
         addAndMakeVisible (barScroll);
         addAndMakeVisible (patternMenuButton);
+        addAndMakeVisible (patternChainEnableButton);
 
         for (int patternIndex = 0;
              patternIndex < SVDrummerAudioProcessor::numberOfPatterns;
@@ -3907,6 +5696,12 @@ public:
             midiModeGroup.withY (controlY + 6).withHeight (27).reduced (3, 0));
         controls.removeFromLeft (6);
 
+        auto syncModeGroup = controls.removeFromLeft (82);
+        syncModeLabel.setBounds (syncModeGroup.removeFromTop (13));
+        syncModeButton.setBounds (
+            syncModeGroup.withY (controlY + 6).withHeight (27).reduced (3, 0));
+        controls.removeFromLeft (6);
+
         auto placeKnob = [&controls] (juce::Label& label, juce::Slider& slider)
         {
             auto group = controls.removeFromLeft (66);
@@ -3939,6 +5734,11 @@ public:
         placePadKnob (padPanLabel, padPanSlider, padPanValueBounds);
         placePadKnob (padTuneLabel, padTuneSlider, padTuneValueBounds);
 
+        auto padModeGroup = controls.removeFromLeft (84);
+        padPlaybackModeLabel.setBounds (padModeGroup.removeFromTop (13));
+        padPlaybackModeButton.setBounds (
+            padModeGroup.withY (controlY + 6).withHeight (27).reduced (2, 0));
+
         area.removeFromTop (1);
         patternBounds = area.removeFromBottom (46);
         area.removeFromBottom (4);
@@ -3948,6 +5748,20 @@ public:
         area.removeFromBottom (3);
         rulerBounds = area.removeFromTop (17);
         sequenceRowsBounds = area;
+
+        const float sequenceRowHeight = static_cast<float> (
+                                            sequenceRowsBounds.getHeight())
+                                      / static_cast<float> (displayedLaneCount);
+        const int patternRowTop = juce::roundToInt (
+            static_cast<float> (sequenceRowsBounds.getY())
+            + sequenceRowHeight
+                * static_cast<float> (patternPlaybackLaneIndex));
+        const int patternRowHeight = juce::jmax (
+            1, juce::roundToInt (sequenceRowHeight));
+        patternChainEnableButton.setBounds (
+            sequenceRowsBounds.getX() + 3,
+            patternRowTop + juce::jmax (0, (patternRowHeight - 14) / 2),
+            14, 14);
 
         auto patternLayout = patternBounds;
         auto patternLabelArea = patternLayout.removeFromLeft (laneLabelWidth);
@@ -3990,6 +5804,23 @@ public:
         const int lane = laneAt (event.position.y);
 
         if (lane < 0)
+            return;
+
+        const bool inLaneHeader =
+            event.position.x
+                < static_cast<float> (
+                    sequenceRowsBounds.getX() + laneLabelWidth);
+
+        if (event.mods.isRightButtonDown() && inLaneHeader)
+        {
+            if (lane != patternPlaybackLaneIndex)
+                selectLane (lane);
+
+            showLaneHeaderMenu (lane, event.getScreenPosition());
+            return;
+        }
+
+        if (lane == patternPlaybackLaneIndex)
             return;
 
         selectLane (lane);
@@ -4057,6 +5888,19 @@ public:
         }
 
         const int dataStep = dataStepForVisibleStep (lane, visibleStep);
+
+        if (lane == patternPlaybackLaneIndex)
+        {
+            const int currentPattern =
+                processor.getPatternPlaybackStep (dataStep);
+            const int newPattern = juce::jlimit (
+                -1, SVDrummerAudioProcessor::numberOfPatterns - 1,
+                currentPattern + (wheel.deltaY > 0.0f ? 1 : -1));
+            processor.setPatternPlaybackStep (dataStep, newPattern);
+            repaint();
+            return;
+        }
+
         const int currentVelocity = processor.getSequenceStepVelocity (lane, dataStep);
 
         if (currentVelocity <= 0)
@@ -4071,18 +5915,96 @@ public:
     }
 
 private:
+    void showLaneHeaderMenu (int lane, juce::Point<int> screenPosition)
+    {
+        juce::PopupMenu menu;
+        const bool patternLane = lane == patternPlaybackLaneIndex;
+
+        if (patternLane)
+        {
+            const bool loopEnabled =
+                processor.isPatternPlaybackLoopEnabled();
+            juce::PopupMenu loopMenu;
+            loopMenu.addItem (6, "On", true, loopEnabled);
+            loopMenu.addItem (7, "Off", true, ! loopEnabled);
+            menu.addSubMenu ("Loop", loopMenu);
+            menu.addSeparator();
+        }
+        else
+        {
+            menu.addItem (1, "Copy");
+            menu.addItem (2, "Paste", processor.canPasteSequenceLane());
+            menu.addItem (3, "Random");
+            menu.addSeparator();
+        }
+
+        menu.addItem (4, "Clear");
+        menu.addItem (
+            5, "Undo",
+            patternLane ? processor.canUndoPatternPlaybackChain()
+                        : processor.canUndoSequenceLaneOperation (lane));
+
+        juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
+        menu.showMenuAsync (
+            juce::PopupMenu::Options().withTargetScreenArea (
+                juce::Rectangle<int> (screenPosition.x, screenPosition.y,
+                                      1, 1)),
+            [safeThis, lane, patternLane] (int result)
+            {
+                if (safeThis == nullptr || result == 0)
+                    return;
+
+                if (patternLane)
+                {
+                    if (result == 4)
+                        safeThis->processor.clearPatternPlaybackChain();
+                    else if (result == 5)
+                        safeThis->processor.undoPatternPlaybackChain();
+                    else if (result == 6)
+                        safeThis->processor.setPatternPlaybackLoopEnabled (
+                            true);
+                    else if (result == 7)
+                        safeThis->processor.setPatternPlaybackLoopEnabled (
+                            false);
+                }
+                else
+                {
+                    if (result == 1)
+                        safeThis->processor.copySequenceLane (lane);
+                    else if (result == 2)
+                        safeThis->processor.pasteSequenceLane (lane);
+                    else if (result == 3)
+                        safeThis->processor.randomiseSequenceLane (lane);
+                    else if (result == 4)
+                        safeThis->processor.clearSequenceLane (lane);
+                    else if (result == 5)
+                        safeThis->processor.undoSequenceLaneOperation (lane);
+
+                    safeThis->syncLaneControls();
+                }
+
+                safeThis->repaint();
+            });
+    }
+
     void showPatternMenu()
     {
         juce::PopupMenu menu;
         menu.addItem (1, "Save Pattern Set");
+        menu.addItem (2, "Load Pattern Set");
 
         juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
         menu.showMenuAsync (
             juce::PopupMenu::Options().withTargetComponent (&patternMenuButton),
             [safeThis] (int result)
             {
-                if (safeThis != nullptr && result == 1)
+                if (safeThis == nullptr)
+                    return;
+
+                if (result == 1)
                     safeThis->savePatternSetToLibrary();
+                else if (result == 2)
+                    safeThis->choosePatternSetToLoad();
             });
     }
 
@@ -4132,11 +6054,78 @@ private:
             });
     }
 
+    void choosePatternSetToLoad()
+    {
+        auto patternSetsDirectory = processor.getPortablePatternsDirectory()
+                                            .getChildFile ("Pattern Sets");
+        patternSetsDirectory.createDirectory();
+        patternSetLoadChooser = std::make_unique<juce::FileChooser> (
+            "Load SV-Drummer Pattern Set", patternSetsDirectory,
+            "*.svpatternset", true);
+
+        juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
+        patternSetLoadChooser->launchAsync (
+            juce::FileBrowserComponent::openMode
+                | juce::FileBrowserComponent::canSelectFiles,
+            [safeThis] (const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                const auto file = chooser.getResult();
+
+                if (file.existsAsFile())
+                    safeThis->loadPatternSetWithConfirmation (file);
+            });
+    }
+
+    void loadPatternSetWithConfirmation (const juce::File& file)
+    {
+        if (! processor.patternSetHasSteps())
+        {
+            finishLoadingPatternSet (file);
+            return;
+        }
+
+        juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
+        juce::AlertWindow::showOkCancelBox (
+            juce::MessageBoxIconType::QuestionIcon,
+            "Replace Pattern Set?",
+            "Loading this Pattern Set will replace all sixteen Patterns.\n\n"
+                + file.getFileNameWithoutExtension(),
+            "Load Pattern Set", "Cancel", this,
+            juce::ModalCallbackFunction::create (
+                [safeThis, file] (int result)
+                {
+                    if (safeThis != nullptr && result != 0)
+                        safeThis->finishLoadingPatternSet (file);
+                }));
+    }
+
+    void finishLoadingPatternSet (const juce::File& file)
+    {
+        const auto result = processor.loadPatternSetFromFile (file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer",
+                "Could not load the Pattern Set:\n\n"
+                    + result.getErrorMessage());
+        }
+        else if (onLoadCompleted)
+        {
+            onLoadCompleted();
+        }
+    }
+
     void drawPadKnobValues (juce::Graphics& g)
     {
         g.setColour (mutedTextColour.brighter (0.18f));
         g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-        g.drawText (padVolumeSlider.getTextFromValue (padVolumeSlider.getValue()),
+        g.drawText (padVolumeSlider.getTextFromValue (
+                        padVolumeSlider.getValue()),
                     padVolumeValueBounds, juce::Justification::centred, false);
         g.drawText (padPanSlider.getTextFromValue (padPanSlider.getValue()),
                     padPanValueBounds, juce::Justification::centred, false);
@@ -4193,7 +6182,22 @@ private:
         midiModeButton.setButtonText (
             midiMode == SVDrummerAudioProcessor::PatternMidiMode::gate ? "GATE"
           : midiMode == SVDrummerAudioProcessor::PatternMidiMode::hold ? "HOLD"
-                                                                       : "SELECT");
+                                                                       : "MANUAL");
+        const auto syncMode = processor.getPatternSyncMode();
+        syncModeButton.setButtonText (
+            syncMode == SVDrummerAudioProcessor::PatternSyncMode::bar ? "BAR"
+          : syncMode == SVDrummerAudioProcessor::PatternSyncMode::beat ? "BEAT"
+                                                                       : "PLAYED");
+        syncModeButton.setColour (
+            juce::TextButton::buttonColourId,
+            syncMode == SVDrummerAudioProcessor::PatternSyncMode::bar
+                ? juce::Colour (0xff286f73)
+              : syncMode == SVDrummerAudioProcessor::PatternSyncMode::beat
+                ? juce::Colour (0xff4f5f86)
+                : raisedPanelColour);
+        patternChainEnableButton.setToggleState (
+            processor.isPatternPlaybackChainEnabled(),
+            juce::dontSendNotification);
         lengthSlider.setValue (processor.getPatternBars(), juce::dontSendNotification);
         lengthSlider.updateText();
         viewSlider.updateText();
@@ -4222,15 +6226,23 @@ private:
                                juce::dontSendNotification);
         padTuneSlider.setValue (processor.getPadTuneSemitones (selectedLane),
                                 juce::dontSendNotification);
+        padPlaybackModeButton.setButtonText (
+            processor.isPadSequencerGated (selectedLane)
+                ? "GATED" : "TRIGGER");
         laneButton.setButtonText ("LANE " + juce::String (selectedLane + 1));
         const auto padAccent = getPadColour (selectedLane);
         laneButton.setColour (juce::TextButton::buttonColourId,
                               padAccent.withAlpha (0.58f));
+        padPlaybackModeButton.setColour (
+            juce::TextButton::buttonColourId,
+            padAccent.withAlpha (0.72f));
 
         for (auto* slider : { &padVolumeSlider, &padPanSlider, &padTuneSlider })
-            slider->setColour (juce::Slider::rotarySliderFillColourId, padAccent);
+            slider->setColour (juce::Slider::rotarySliderFillColourId,
+                               padAccent);
 
-        for (auto* label : { &padVolumeLabel, &padPanLabel, &padTuneLabel })
+        for (auto* label : { &padVolumeLabel, &padPanLabel, &padTuneLabel,
+                             &padPlaybackModeLabel })
             label->setColour (juce::Label::textColourId,
                               padAccent.brighter (0.20f));
         updatingControls = false;
@@ -4278,7 +6290,7 @@ private:
 
     void updateScrollRange()
     {
-        const double totalBars = static_cast<double> (processor.getPatternBars());
+        const double totalBars = static_cast<double> (getTotalBars());
         const double shown = static_cast<double> (getBarsShown());
         const double oldStart = barScroll.getCurrentRangeStart();
         const double maximumStart = juce::jmax (0.0, totalBars - shown);
@@ -4289,14 +6301,19 @@ private:
 
     int getBarsShown() const
     {
-        return juce::jmin (visibleBars, processor.getPatternBars());
+        return juce::jmin (visibleBars, getTotalBars());
     }
 
     int getStartBar() const
     {
         return juce::jlimit (0,
-                             juce::jmax (0, processor.getPatternBars() - getBarsShown()),
+                             juce::jmax (0, getTotalBars() - getBarsShown()),
                              juce::roundToInt (barScroll.getCurrentRangeStart()));
+    }
+
+    int getTotalBars() const
+    {
+        return processor.getPatternBars();
     }
 
     int laneAt (float y) const
@@ -4305,8 +6322,11 @@ private:
             return -1;
 
         const float relativeY = y - static_cast<float> (sequenceRowsBounds.getY());
-        const float rowHeight = static_cast<float> (sequenceRowsBounds.getHeight()) / 16.0f;
-        return juce::jlimit (0, 15, static_cast<int> (std::floor (relativeY / rowHeight)));
+        const float rowHeight = static_cast<float> (sequenceRowsBounds.getHeight())
+                              / static_cast<float> (displayedLaneCount);
+        return juce::jlimit (
+            0, displayedLaneCount - 1,
+            static_cast<int> (std::floor (relativeY / rowHeight)));
     }
 
     void selectLane (int lane)
@@ -4327,7 +6347,7 @@ private:
 
     int visibleStepAt (float x, int lane) const
     {
-        if (lane < 0 || lane >= 16)
+        if (lane < 0 || lane >= displayedLaneCount)
             return -1;
 
         auto stepsBounds = sequenceRowsBounds;
@@ -4337,9 +6357,12 @@ private:
             || x >= static_cast<float> (stepsBounds.getRight()))
             return -1;
 
-        const int division = processor.getLaneDivision (lane);
-        const int stepsPerBar = SVDrummerAudioProcessor::getSequencerStepsPerBar (division);
-        const int visibleSteps = juce::jmax (1, getBarsShown() * stepsPerBar);
+        const int visibleSteps = lane == patternPlaybackLaneIndex
+            ? SVDrummerAudioProcessor::maximumPatternPlaybackSteps
+            : juce::jmax (
+                  1, getBarsShown()
+                       * SVDrummerAudioProcessor::getSequencerStepsPerBar (
+                           processor.getLaneDivision (lane)));
         const float relativeX = x - static_cast<float> (stepsBounds.getX());
         return juce::jlimit (
             0, visibleSteps - 1,
@@ -4350,6 +6373,11 @@ private:
 
     int dataStepForVisibleStep (int lane, int visibleStep) const
     {
+        if (lane == patternPlaybackLaneIndex)
+            return juce::jlimit (
+                0, SVDrummerAudioProcessor::maximumPatternPlaybackSteps - 1,
+                visibleStep);
+
         const int division = processor.getLaneDivision (lane);
         const int stepsPerBar = SVDrummerAudioProcessor::getSequencerStepsPerBar (division);
         const int globalStep = getStartBar() * stepsPerBar + visibleStep;
@@ -4359,6 +6387,9 @@ private:
 
     void applyStepGesture (int lane, int visibleStep)
     {
+        if (lane < 0 || lane >= SVDrummerAudioProcessor::numberOfPads)
+            return;
+
         const int dataStep = dataStepForVisibleStep (lane, visibleStep);
         const int currentVelocity = processor.getSequenceStepVelocity (lane, dataStep);
 
@@ -4373,10 +6404,13 @@ private:
         if (sequenceRowsBounds.isEmpty())
             return;
 
-        const float rowHeight = static_cast<float> (sequenceRowsBounds.getHeight()) / 16.0f;
+        const float rowHeight = static_cast<float> (sequenceRowsBounds.getHeight())
+                              / static_cast<float> (displayedLaneCount);
         const int startBar = getStartBar();
         const int barsShown = getBarsShown();
-        for (int lane = 0; lane < 16; ++lane)
+        for (int lane = 0;
+             lane < SVDrummerAudioProcessor::numberOfPads;
+             ++lane)
         {
             const float rowY = static_cast<float> (sequenceRowsBounds.getY())
                              + rowHeight * static_cast<float> (lane);
@@ -4450,6 +6484,77 @@ private:
                 }
             }
         }
+
+        drawPatternPlaybackRow (g, rowHeight);
+    }
+
+    void drawPatternPlaybackRow (juce::Graphics& g,
+                                 float rowHeight)
+    {
+        const float rowY = static_cast<float> (sequenceRowsBounds.getY())
+                         + rowHeight
+                             * static_cast<float> (patternPlaybackLaneIndex);
+        auto row = juce::Rectangle<float> (
+            static_cast<float> (sequenceRowsBounds.getX()), rowY,
+            static_cast<float> (sequenceRowsBounds.getWidth()), rowHeight);
+        auto label = row.removeFromLeft (static_cast<float> (laneLabelWidth));
+        row.removeFromLeft (4.0f);
+        const auto accent = processor.isPatternPlaybackLoopEnabled()
+                              ? juce::Colour (0xff286f73)
+                              : juce::Colour (0xffdc7d83);
+
+        const bool chainEnabled = processor.isPatternPlaybackChainEnabled();
+        g.setColour (accent.withAlpha (chainEnabled ? 0.48f : 0.28f));
+        g.fillRoundedRectangle (label.reduced (0.0f, 0.6f), 1.5f);
+        g.setColour (juce::Colours::white.withAlpha (0.94f));
+        g.setFont (juce::FontOptions (
+            juce::jmax (8.5f, juce::jmin (10.0f, rowHeight * 0.58f)),
+            juce::Font::bold));
+        auto patternLabelBounds = label.toNearestInt().reduced (3, 0);
+        patternLabelBounds.removeFromLeft (16);
+        g.drawFittedText ("PATTERN", patternLabelBounds,
+                          juce::Justification::centred, 1, 0.78f);
+
+        const int visibleSteps =
+            SVDrummerAudioProcessor::maximumPatternPlaybackSteps;
+        const float cellWidth = row.getWidth()
+                              / static_cast<float> (visibleSteps);
+        const int activeStep = processor.getActivePatternPlaybackStep();
+
+        for (int visibleStep = 0; visibleStep < visibleSteps; ++visibleStep)
+        {
+            const int dataStep = visibleStep;
+            const int patternIndex = processor.getPatternPlaybackStep (dataStep);
+            const bool active = dataStep == activeStep;
+            auto cell = juce::Rectangle<float> (
+                row.getX() + cellWidth * static_cast<float> (visibleStep),
+                row.getY(), juce::jmax (0.75f, cellWidth - 0.7f),
+                row.getHeight());
+            auto inner = cell.reduced (0.0f, 0.7f);
+
+            g.setColour (patternIndex >= 0
+                             ? accent.withAlpha (active ? 0.92f : 0.62f)
+                             : raisedPanelColour.darker (0.18f));
+            g.fillRoundedRectangle (inner, 1.0f);
+
+            if (active)
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.82f));
+                g.drawRoundedRectangle (inner.reduced (0.45f), 1.0f, 1.1f);
+            }
+
+            g.setColour (patternIndex >= 0
+                             ? juce::Colours::white.withAlpha (0.96f)
+                             : mutedTextColour.withAlpha (0.74f));
+            g.setFont (juce::FontOptions (
+                juce::jmax (7.0f, juce::jmin (9.5f, rowHeight * 0.52f)),
+                juce::Font::bold));
+            g.drawFittedText (
+                patternIndex >= 0 ? juce::String (patternIndex + 1)
+                                  : juce::String ("OFF"),
+                inner.toNearestInt().reduced (1, 0),
+                juce::Justification::centred, 1, 0.55f);
+        }
     }
 
     void drawBeatGrid (juce::Graphics& g)
@@ -4459,6 +6564,12 @@ private:
 
         auto stepArea = sequenceRowsBounds.toFloat();
         stepArea.removeFromLeft (static_cast<float> (laneLabelWidth + 4));
+        const float rowHeight = static_cast<float> (
+                                    sequenceRowsBounds.getHeight())
+                              / static_cast<float> (displayedLaneCount);
+        stepArea.setBottom (
+            static_cast<float> (sequenceRowsBounds.getY())
+            + rowHeight * static_cast<float> (patternPlaybackLaneIndex));
         const int totalBeats = juce::jmax (1, getBarsShown() * 4);
 
         for (int beat = 0; beat <= totalBeats; ++beat)
@@ -4483,6 +6594,12 @@ private:
 
         auto stepArea = sequenceRowsBounds;
         stepArea.removeFromLeft (laneLabelWidth + 4);
+        const float rowHeight = static_cast<float> (
+                                    sequenceRowsBounds.getHeight())
+                              / static_cast<float> (displayedLaneCount);
+        stepArea.setBottom (juce::roundToInt (
+            static_cast<float> (sequenceRowsBounds.getY())
+            + rowHeight * static_cast<float> (patternPlaybackLaneIndex)));
         const double visibleStart = static_cast<double> (getStartBar()) * 4.0;
         const double visibleLength = static_cast<double> (getBarsShown()) * 4.0;
         const double position = processor.getSequencerPatternPositionQuarterNotes();
@@ -4509,13 +6626,20 @@ private:
         g.drawRect (playhead.reduced (0.45f), 1.15f);
     }
 
+    static constexpr int patternPlaybackLaneIndex =
+        SVDrummerAudioProcessor::numberOfPads;
+    static constexpr int displayedLaneCount =
+        SVDrummerAudioProcessor::numberOfPads + 1;
+
     SVDrummerAudioProcessor& processor;
     std::function<void()> onPatternLibraryChanged;
     std::function<void (int)> onLaneSelectionChanged;
     std::function<void()> onLoadCompleted;
     SVDrummerTransportButton enableButton;
     juce::Label midiModeLabel;
-    juce::TextButton midiModeButton { "SELECT" };
+    juce::TextButton midiModeButton { "MANUAL" };
+    juce::Label syncModeLabel;
+    juce::TextButton syncModeButton { "PLAYED" };
     juce::Label lengthLabel;
     juce::Slider lengthSlider;
     juce::Label viewLabel;
@@ -4531,9 +6655,15 @@ private:
     juce::Slider padPanSlider;
     juce::Label padTuneLabel;
     juce::Slider padTuneSlider;
+    juce::Label padPlaybackModeLabel;
+    juce::TextButton padPlaybackModeButton { "TRIGGER" };
     juce::TextButton patternMenuButton { "MENU" };
+    SVDrummerLedButton patternChainEnableButton {
+        "Pattern chain on or off"
+    };
     juce::ScrollBar barScroll;
     std::unique_ptr<juce::FileChooser> patternSetSaveChooser;
+    std::unique_ptr<juce::FileChooser> patternSetLoadChooser;
     std::array<std::unique_ptr<SVDrummerPatternSlot>,
                SVDrummerAudioProcessor::numberOfPatterns> patternSlots;
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetDivisions {};
@@ -4568,6 +6698,8 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
     lookAndFeel = std::make_unique<SVDrummerLookAndFeel>();
     setLookAndFeel (lookAndFeel.get());
     tooltipWindow = std::make_unique<juce::TooltipWindow> (this, 650);
+    padVolumeTooltip = std::make_unique<SVDrummerTransientTooltip>();
+    addChildComponent (*padVolumeTooltip);
     setOpaque (true);
 
     logoImage = juce::ImageFileFormat::loadFrom (
@@ -4579,7 +6711,8 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
         [this]
         {
             return zoomSavePending || processor.hasUnsavedPortableChanges();
-        });
+        },
+        [this] { handleLibraryLoadCompleted(); });
     addAndMakeVisible (*browserPanel);
 
     for (int padIndex = 0; padIndex < SVDrummerAudioProcessor::numberOfPads; ++padIndex)
@@ -4589,11 +6722,17 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
                 processor, padIndex,
                 [this] (int selected) { showPadSettings (selected); },
                 [this] (int selected) { selectPadFromIndicator (selected); },
-                [this] { handleLibraryLoadCompleted(); });
+                [this] { handleLibraryLoadCompleted(); },
+                [this] (juce::Point<int> screenPosition,
+                        const juce::String& text)
+                {
+                    showPadVolumeTooltip (screenPosition, text);
+                });
         addAndMakeVisible (*padComponents[static_cast<std::size_t> (padIndex)]);
     }
 
     padSettingsPanel = std::make_unique<SVDrummerPadSettingsPanel> (processor);
+    globalFxPanel = std::make_unique<SVDrummerGlobalFxPanel> (processor);
     sequencerPanel = std::make_unique<SVDrummerSequencerPanel> (
         processor,
         [this]
@@ -4605,17 +6744,24 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
         [this] { handleLibraryLoadCompleted(); });
     addAndMakeVisible (*padSettingsPanel);
     addAndMakeVisible (*sequencerPanel);
+    addAndMakeVisible (*globalFxPanel);
 
     sequencerViewButton.onClick = [this] { showSequencerView(); };
     settingsViewButton.onClick = [this] { showPadSettings (selectedPad); };
+    fxViewButton.onClick = [this] { showFxView(); };
     sequencerViewButton.setClickingTogglesState (false);
     settingsViewButton.setClickingTogglesState (false);
+    fxViewButton.setClickingTogglesState (false);
     sequencerViewButton.setConnectedEdges (juce::Button::ConnectedOnRight
                                            | juce::Button::ConnectedOnBottom);
     settingsViewButton.setConnectedEdges (juce::Button::ConnectedOnLeft
+                                          | juce::Button::ConnectedOnRight
+                                          | juce::Button::ConnectedOnBottom);
+    fxViewButton.setConnectedEdges (juce::Button::ConnectedOnLeft
                                           | juce::Button::ConnectedOnBottom);
 
-    for (auto* tab : { &sequencerViewButton, &settingsViewButton })
+    for (auto* tab : { &sequencerViewButton, &settingsViewButton,
+                       &fxViewButton })
     {
         tab->setColour (juce::TextButton::buttonColourId,
                         raisedPanelColour.darker (0.42f));
@@ -4627,14 +6773,17 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
 
     addAndMakeVisible (sequencerViewButton);
     addAndMakeVisible (settingsViewButton);
+    addAndMakeVisible (fxViewButton);
 
     selectedPad = processor.getEditorSelectedPad();
     sequencerPanel->setSelectedLane (selectedPad);
 
-    if (processor.isEditorShowingPadSettings())
-        showPadSettings (selectedPad);
-    else
-        showSequencerView();
+    switch (processor.getEditorViewIndex())
+    {
+        case 1:  showPadSettings (selectedPad); break;
+        case 2:  showFxView(); break;
+        default: showSequencerView(); break;
+    }
 
     setResizable (true, true);
     setResizeLimits (baseEditorWidth * 3 / 4, baseEditorHeight * 3 / 4,
@@ -4693,7 +6842,8 @@ void SVDrummerAudioProcessorEditor::paint (juce::Graphics& g)
     title.removeFromLeft (8);
     g.setColour (juce::Colour (0xff5fa3d1));
     g.setFont (12.0f);
-    g.drawSingleLineText ("v0.7.12", title.getX(),
+    g.drawSingleLineText (juce::String ("v") + JucePlugin_VersionString,
+                          title.getX(),
                           logoBounds.getBottom() - 3,
                           juce::Justification::left);
     g.restoreState();
@@ -4742,9 +6892,11 @@ void SVDrummerAudioProcessorEditor::resized()
     auto viewButtons = area.removeFromTop (26);
     sequencerViewButton.setBounds (viewButtons.removeFromLeft (132).withHeight (28));
     settingsViewButton.setBounds (viewButtons.removeFromLeft (132).withHeight (28));
+    fxViewButton.setBounds (viewButtons.removeFromLeft (132).withHeight (28));
 
     sequencerPanel->setBounds (area);
     padSettingsPanel->setBounds (area);
+    globalFxPanel->setBounds (area);
 
     const auto transform = juce::AffineTransform (
         uiScale, 0.0f, uiOffsetX,
@@ -4756,8 +6908,10 @@ void SVDrummerAudioProcessorEditor::resized()
 
     sequencerViewButton.setTransform (transform);
     settingsViewButton.setTransform (transform);
+    fxViewButton.setTransform (transform);
     sequencerPanel->setTransform (transform);
     padSettingsPanel->setTransform (transform);
+    globalFxPanel->setTransform (transform);
 
     if (initialLayoutComplete)
         zoomSavePending = true;
@@ -4768,10 +6922,20 @@ void SVDrummerAudioProcessorEditor::timerCallback()
     for (auto& pad : padComponents)
         pad->refreshAnimation();
 
-    if (showingSettings)
+    if (activeView == 1)
         padSettingsPanel->syncFromProcessor();
+    else if (activeView == 2)
+        globalFxPanel->syncFromProcessor();
     else
         sequencerPanel->refresh();
+
+    if (padVolumeTooltipHideAtMilliseconds > 0.0
+        && juce::Time::getMillisecondCounterHiRes()
+               >= padVolumeTooltipHideAtMilliseconds)
+    {
+        padVolumeTooltip->setVisible (false);
+        padVolumeTooltipHideAtMilliseconds = -1.0;
+    }
 
     if (++portableSettingsTimerTicks >= 20)
     {
@@ -4779,6 +6943,36 @@ void SVDrummerAudioProcessorEditor::timerCallback()
         browserPanel->saveUiState();
         browserPanel->refreshSaveState();
     }
+}
+
+void SVDrummerAudioProcessorEditor::showPadVolumeTooltip (
+    juce::Point<int> screenPosition, const juce::String& text)
+{
+    const float tooltipScale = juce::jmax (0.75f, uiScale);
+    const int tooltipWidth = juce::roundToInt (82.0f * tooltipScale);
+    const int tooltipHeight = juce::roundToInt (25.0f * tooltipScale);
+    const int gap = juce::roundToInt (10.0f * tooltipScale);
+    const int edge = juce::roundToInt (4.0f * tooltipScale);
+    const auto localPosition = getLocalPoint (nullptr, screenPosition);
+
+    int x = localPosition.x - tooltipWidth - gap;
+    int y = localPosition.y - tooltipHeight - gap;
+
+    if (x < edge)
+        x = localPosition.x + gap;
+
+    if (y < edge)
+        y = localPosition.y + gap;
+
+    x = juce::jlimit (edge, juce::jmax (edge, getWidth() - tooltipWidth - edge), x);
+    y = juce::jlimit (edge, juce::jmax (edge, getHeight() - tooltipHeight - edge), y);
+
+    padVolumeTooltip->setMessage (text, 12.0f * tooltipScale);
+    padVolumeTooltip->setBounds (x, y, tooltipWidth, tooltipHeight);
+    padVolumeTooltip->setVisible (true);
+    padVolumeTooltip->toFront (false);
+    padVolumeTooltipHideAtMilliseconds
+        = juce::Time::getMillisecondCounterHiRes() + 2000.0;
 }
 
 int SVDrummerAudioProcessorEditor::loadSavedZoomPercent() const
@@ -4912,12 +7106,13 @@ void SVDrummerAudioProcessorEditor::chooseMissingSampleFolder()
 
 void SVDrummerAudioProcessorEditor::showSequencerView()
 {
-    showingSettings = false;
-    processor.setEditorShowingPadSettings (false);
+    activeView = 0;
+    processor.setEditorViewIndex (activeView);
     updatePadSelection (sequencerPanel->getSelectedLane());
 
     sequencerPanel->setVisible (true);
     padSettingsPanel->setVisible (false);
+    globalFxPanel->setVisible (false);
     updateViewButtons();
 }
 
@@ -4925,14 +7120,26 @@ void SVDrummerAudioProcessorEditor::showPadSettings (int padIndex)
 {
     selectedPad = juce::jlimit (0, SVDrummerAudioProcessor::numberOfPads - 1,
                                padIndex);
-    showingSettings = true;
-    processor.setEditorShowingPadSettings (true);
+    activeView = 1;
+    processor.setEditorViewIndex (activeView);
     sequencerPanel->setSelectedLane (selectedPad);
     updatePadSelection (selectedPad);
 
     padSettingsPanel->setPadIndex (selectedPad);
     sequencerPanel->setVisible (false);
     padSettingsPanel->setVisible (true);
+    globalFxPanel->setVisible (false);
+    updateViewButtons();
+}
+
+void SVDrummerAudioProcessorEditor::showFxView()
+{
+    activeView = 2;
+    processor.setEditorViewIndex (activeView);
+    sequencerPanel->setVisible (false);
+    padSettingsPanel->setVisible (false);
+    globalFxPanel->setVisible (true);
+    globalFxPanel->syncFromProcessor();
     updateViewButtons();
 }
 
@@ -4941,7 +7148,7 @@ void SVDrummerAudioProcessorEditor::selectPadFromIndicator (int padIndex)
     const int selected = juce::jlimit (
         0, SVDrummerAudioProcessor::numberOfPads - 1, padIndex);
 
-    if (showingSettings)
+    if (activeView == 1)
     {
         showPadSettings (selected);
         return;
@@ -4964,9 +7171,14 @@ void SVDrummerAudioProcessorEditor::updatePadSelection (int padIndex)
 
 void SVDrummerAudioProcessorEditor::updateViewButtons()
 {
-    sequencerViewButton.setToggleState (! showingSettings, juce::dontSendNotification);
-    settingsViewButton.setToggleState (showingSettings, juce::dontSendNotification);
+    sequencerViewButton.setToggleState (activeView == 0,
+                                        juce::dontSendNotification);
+    settingsViewButton.setToggleState (activeView == 1,
+                                       juce::dontSendNotification);
+    fxViewButton.setToggleState (activeView == 2,
+                                 juce::dontSendNotification);
     sequencerViewButton.repaint();
     settingsViewButton.repaint();
+    fxViewButton.repaint();
     repaint();
 }
