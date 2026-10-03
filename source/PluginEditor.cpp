@@ -20,6 +20,14 @@ const juce::Colour mutedTextColour (0xff8d949e);
 const juce::Colour trimMarkerColour (0xffef5a5a);
 const juce::Colour loopMarkerColour (0xff23838a);
 const juce::Colour snapMarkerColour (0xff3f965b);
+const juce::Colour knobLabelColour (mutedTextColour);
+const juce::Colour knobValueColour (mutedTextColour.brighter (0.18f));
+const juce::Colour curveKnobColour (0xff3a9da1);
+const juce::Colour saturationKnobColour (0xffc8aa45);
+const juce::Colour filterKnobColour (0xffc75a56);
+const juce::Colour compressorKnobColour (0xff52a168);
+constexpr float knobLabelFontSize = 10.5f;
+constexpr float knobValueFontSize = 11.5f;
 constexpr int baseEditorWidth = 1280;
 constexpr int baseEditorHeight = 862;
 
@@ -91,7 +99,8 @@ public:
     juce::Label* createSliderTextBox (juce::Slider& slider) override
     {
         auto* label = juce::LookAndFeel_V4::createSliderTextBox (slider);
-        label->setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        label->setFont (juce::FontOptions (
+            knobValueFontSize, juce::Font::bold));
         return label;
     }
 
@@ -3673,6 +3682,23 @@ public:
                          "SAT", 0.0, 1.0, 0.01);
         configureSlider (hardClipSlider, hardClipLabel,
                          "HARD CLIP", 0.0, 1.0, 0.01);
+        setKnobAccent (curveSlider, curveKnobColour);
+        setKnobAccent (saturationSlider, saturationKnobColour);
+        setKnobAccent (hardClipSlider, saturationKnobColour);
+
+        for (auto* slider : { &filterCutoffSlider,
+                              &filterResonanceSlider,
+                              &filterDriveSlider,
+                              &highPassSlider })
+            setKnobAccent (*slider, filterKnobColour);
+
+        for (auto* slider : { &compressorThresholdSlider,
+                              &compressorRatioSlider,
+                              &compressorAttackSlider,
+                              &compressorReleaseSlider,
+                              &compressorKneeSlider })
+            setKnobAccent (*slider, compressorKnobColour);
+
         curveSlider.setMouseDragSensitivity (320);
         panSlider.setMouseDragSensitivity (320);
         tuneSlider.setMouseDragSensitivity (400);
@@ -4535,7 +4561,7 @@ private:
         slider.setMouseDragSensitivity (80);
         slider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xff5fa3d1));
         slider.setColour (juce::Slider::textBoxTextColourId,
-                          mutedTextColour.brighter (0.18f));
+                          knobValueColour);
         slider.setColour (juce::Slider::textBoxBackgroundColourId,
                           juce::Colours::transparentBlack);
         slider.setColour (juce::Slider::textBoxOutlineColourId,
@@ -4543,10 +4569,16 @@ private:
 
         label.setText (labelText, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centredTop);
-        label.setColour (juce::Label::textColourId, textColour);
-        label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        label.setColour (juce::Label::textColourId, knobLabelColour);
+        label.setFont (juce::FontOptions (
+            knobLabelFontSize, juce::Font::bold));
         addAndMakeVisible (slider);
         addAndMakeVisible (label);
+    }
+
+    static void setKnobAccent (juce::Slider& slider, juce::Colour colour)
+    {
+        slider.setColour (juce::Slider::rotarySliderFillColourId, colour);
     }
 
     void configureComboBox (juce::ComboBox& combo,
@@ -4563,8 +4595,9 @@ private:
                          juce::Colour (0xff5fa3d1));
         label.setText (labelText, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centredTop);
-        label.setColour (juce::Label::textColourId, textColour);
-        label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        label.setColour (juce::Label::textColourId, knobLabelColour);
+        label.setFont (juce::FontOptions (
+            knobLabelFontSize, juce::Font::bold));
         addAndMakeVisible (combo);
         addAndMakeVisible (label);
     }
@@ -5232,15 +5265,16 @@ private:
         slider.setColour (juce::Slider::rotarySliderFillColourId,
                           juce::Colour (0xff5fa3d1));
         slider.setColour (juce::Slider::textBoxTextColourId,
-                          mutedTextColour.brighter (0.18f));
+                          knobValueColour);
         slider.setColour (juce::Slider::textBoxBackgroundColourId,
                           juce::Colours::transparentBlack);
         slider.setColour (juce::Slider::textBoxOutlineColourId,
                           juce::Colours::transparentBlack);
         label.setText (labelText, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centredTop);
-        label.setColour (juce::Label::textColourId, textColour);
-        label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        label.setColour (juce::Label::textColourId, knobLabelColour);
+        label.setFont (juce::FontOptions (
+            knobLabelFontSize, juce::Font::bold));
         addAndMakeVisible (slider);
         addAndMakeVisible (label);
     }
@@ -6613,8 +6647,9 @@ private:
 
     void drawPadKnobValues (juce::Graphics& g)
     {
-        g.setColour (mutedTextColour.brighter (0.18f));
-        g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        g.setColour (knobValueColour);
+        g.setFont (juce::FontOptions (
+            knobValueFontSize, juce::Font::bold));
         g.drawText (padVolumeSlider.getTextFromValue (
                         padVolumeSlider.getValue()),
                     padVolumeValueBounds, juce::Justification::centred, false);
@@ -6638,7 +6673,7 @@ private:
         slider.setColour (juce::Slider::rotarySliderFillColourId,
                           juce::Colour (0xff5fa3d1));
         slider.setColour (juce::Slider::textBoxTextColourId,
-                          mutedTextColour.brighter (0.18f));
+                          knobValueColour);
         slider.setColour (juce::Slider::textBoxBackgroundColourId,
                           juce::Colours::transparentBlack);
         slider.setColour (juce::Slider::textBoxOutlineColourId,
@@ -6649,8 +6684,9 @@ private:
     {
         label.setText (text, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centred);
-        label.setColour (juce::Label::textColourId, mutedTextColour);
-        label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        label.setColour (juce::Label::textColourId, knobLabelColour);
+        label.setFont (juce::FontOptions (
+            knobLabelFontSize, juce::Font::bold));
     }
 
     void syncFromProcessor()

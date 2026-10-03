@@ -1,4 +1,4 @@
-# SV-Drummer v0.10.4
+# SV-Drummer v0.10.7
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -24,6 +24,20 @@ Version 0.10.4 gives all four controls in every mixer strip an identical-width
 fader cell. This removes the final-cell rounding difference so the Reverb Send
 stalk and endpoint positions exactly match Delay Send.
 
+Version 0.10.5 standardises every Pad Settings, Delay and Reverb rotary control
+against the Sequencer DIV/LOOP typography. Knob labels now share the same font,
+size and muted colour, while value fields independently share the same value
+font, size and lighter colour.
+
+Version 0.10.6 slightly enlarges the shared knob-label font and applies it to
+the Filter Type and Slope labels as well. Pad Settings knob indicators are now
+section-coloured without colouring their labels, bodies or numeric values:
+CURVE uses dark aqua, SAT/HARD CLIP use yellow, Filter knobs use red and
+Compressor knobs use green.
+
+Version 0.10.7 brightens the CURVE knob's aqua indicator while retaining a
+moderate tone that remains balanced with the other Pad Settings colours.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -42,7 +56,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `0.10.4`
+- Version: `0.10.7`
 
 ## Current features
 
