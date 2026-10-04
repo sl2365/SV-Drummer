@@ -22,14 +22,37 @@ const juce::Colour loopMarkerColour (0xff23838a);
 const juce::Colour snapMarkerColour (0xff3f965b);
 const juce::Colour knobLabelColour (mutedTextColour);
 const juce::Colour knobValueColour (mutedTextColour.brighter (0.18f));
-const juce::Colour curveKnobColour (0xff3a9da1);
+const juce::Colour curveKnobColour (0xff56ddea);
+const juce::Colour ampKnobColour (0xff526fcf);
 const juce::Colour saturationKnobColour (0xffc8aa45);
 const juce::Colour filterKnobColour (0xffc75a56);
 const juce::Colour compressorKnobColour (0xff52a168);
+const juce::Colour delayKnobColour (0xff9b9b4f);
+const juce::Colour reverbKnobColour (0xffa678c4);
 constexpr float knobLabelFontSize = 10.5f;
-constexpr float knobValueFontSize = 11.5f;
+constexpr float knobValueFontSize = 12.5f;
 constexpr int baseEditorWidth = 1280;
 constexpr int baseEditorHeight = 862;
+
+juce::Font makeKnobLabelFont()
+{
+    return juce::Font (juce::FontOptions (
+        knobLabelFontSize, juce::Font::bold));
+}
+
+juce::Font makeKnobValueFont()
+{
+    return juce::Font (juce::FontOptions (
+        knobValueFontSize, juce::Font::bold));
+}
+
+juce::String formatCompactMilliseconds (double value)
+{
+    if (value >= 1000.0)
+        return juce::String (value / 1000.0, 2) + " s";
+
+    return juce::String (juce::roundToInt (value)) + " ms";
+}
 
 float shapeAttackPhase (float phase, float curve) noexcept
 {
@@ -99,8 +122,7 @@ public:
     juce::Label* createSliderTextBox (juce::Slider& slider) override
     {
         auto* label = juce::LookAndFeel_V4::createSliderTextBox (slider);
-        label->setFont (juce::FontOptions (
-            knobValueFontSize, juce::Font::bold));
+        label->setFont (makeKnobValueFont());
         return label;
     }
 
@@ -112,9 +134,11 @@ public:
                            juce::Slider::SliderStyle style,
                            juce::Slider& slider) override
     {
-        if (style != juce::Slider::LinearVertical
-            || ! static_cast<bool> (slider.getProperties().getWithDefault (
-                "svMixerBipolar", false)))
+        const bool usesMixerTrack = style == juce::Slider::LinearVertical
+            && static_cast<bool> (slider.getProperties().getWithDefault (
+                "svMixerThinTrack", false));
+
+        if (! usesMixerTrack)
         {
             juce::LookAndFeel_V4::drawLinearSlider (
                 g, x, y, width, height, sliderPos,
@@ -123,6 +147,45 @@ public:
         }
 
         constexpr float trackWidth = 4.0f;
+
+        if (! static_cast<bool> (slider.getProperties().getWithDefault (
+                "svMixerBipolar", false)))
+        {
+            const auto startPoint = juce::Point<float> (
+                static_cast<float> (x) + static_cast<float> (width) * 0.5f,
+                static_cast<float> (y + height));
+            const auto endPoint = juce::Point<float> (
+                startPoint.x, static_cast<float> (y));
+
+            juce::Path backgroundTrack;
+            backgroundTrack.startNewSubPath (startPoint);
+            backgroundTrack.lineTo (endPoint);
+            g.setColour (slider.findColour (
+                juce::Slider::backgroundColourId));
+            g.strokePath (backgroundTrack,
+                          { trackWidth,
+                            juce::PathStrokeType::curved,
+                            juce::PathStrokeType::rounded });
+
+            const auto thumbPoint = juce::Point<float> (
+                startPoint.x, sliderPos);
+            juce::Path valueTrack;
+            valueTrack.startNewSubPath (startPoint);
+            valueTrack.lineTo (thumbPoint);
+            g.setColour (slider.findColour (juce::Slider::trackColourId));
+            g.strokePath (valueTrack,
+                          { trackWidth,
+                            juce::PathStrokeType::curved,
+                            juce::PathStrokeType::rounded });
+
+            const auto thumbWidth = static_cast<float> (
+                getSliderThumbRadius (slider));
+            g.setColour (slider.findColour (juce::Slider::thumbColourId));
+            g.fillEllipse (juce::Rectangle<float> (thumbWidth, thumbWidth)
+                               .withCentre (thumbPoint));
+            return;
+        }
+
         const float trackX = static_cast<float> (x)
                            + (static_cast<float> (width) - trackWidth) * 0.5f;
         const float trackTop = static_cast<float> (y) + 3.0f;
@@ -671,7 +734,56 @@ public:
                   juce::sendNotificationSync);
     }
 
+    void lookAndFeelChanged() override
+    {
+        juce::Slider::lookAndFeelChanged();
+        styleValueLabel();
+    }
+
+    void resized() override
+    {
+        juce::Slider::resized();
+        styleValueLabel();
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        juce::Slider::paintOverChildren (g);
+
+        for (int childIndex = 0; childIndex < getNumChildComponents();
+             ++childIndex)
+        {
+            const auto* valueLabel = dynamic_cast<const juce::Label*> (
+                getChildComponent (childIndex));
+
+            if (valueLabel == nullptr)
+                continue;
+
+            g.setColour (findColour (juce::Slider::textBoxTextColourId));
+            g.setFont (makeKnobValueFont());
+            g.drawText (getTextFromValue (getValue()),
+                        valueLabel->getBounds(),
+                        juce::Justification::centred, false);
+        }
+    }
+
 private:
+    void styleValueLabel()
+    {
+        for (int childIndex = 0; childIndex < getNumChildComponents();
+             ++childIndex)
+        {
+            if (auto* valueLabel = dynamic_cast<juce::Label*> (
+                    getChildComponent (childIndex)))
+            {
+                valueLabel->setFont (makeKnobValueFont());
+                valueLabel->setColour (
+                    juce::Label::textColourId,
+                    juce::Colours::transparentBlack);
+            }
+        }
+    }
+
     double wheelStep = 1.0;
 };
 
@@ -1287,8 +1399,9 @@ public:
         refreshButton.setTooltip ("Refresh the browser");
         previewButton.setTooltip ("Play the selected sample without loading it onto a pad");
         saveButton.setTooltip (
-            "Save all pads, patterns, sequencer data, browser folders and GUI zoom");
-        saveAsButton.setTooltip ("Save under a new name or location");
+            "Save the current library item; new items ask for a name and location");
+        saveAsButton.setTooltip (
+            "Save the current library item under a different name or location");
         loadButton.setTooltip ("Load a library file from elsewhere on disk");
         openFolderButton.setTooltip ("Open this library folder in Explorer");
 
@@ -1306,12 +1419,28 @@ public:
         addAndMakeVisible (openFolderButton);
         addAndMakeVisible (tree);
         addAndMakeVisible (emptyLabel);
+        addAndMakeVisible (currentItemLabel);
 
         emptyLabel.setText ("Add one or more sample folders.\n\n"
                             "Drag supported samples from this tree onto a pad.",
                             juce::dontSendNotification);
         emptyLabel.setJustificationType (juce::Justification::centred);
         emptyLabel.setColour (juce::Label::textColourId, mutedTextColour);
+
+        currentItemLabel.setJustificationType (
+            juce::Justification::centredLeft);
+        currentItemLabel.setFont (
+            juce::FontOptions (12.0f, juce::Font::bold));
+        currentItemLabel.setColour (juce::Label::textColourId,
+                                    juce::Colour (0xff3c9fc1));
+        currentItemLabel.setColour (
+            juce::Label::backgroundColourId,
+            juce::Colours::transparentBlack);
+        currentItemLabel.setColour (
+            juce::Label::outlineColourId,
+            juce::Colours::transparentBlack);
+        currentItemLabel.setBorderSize ({ 0, 0, 0, 0 });
+        currentItemLabel.setMinimumHorizontalScale (0.72f);
 
         showBrowserMode (processor.getEditorBrowserMode());
         refreshSaveState();
@@ -1324,12 +1453,21 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.setColour (panelColour);
-        g.fillRoundedRectangle (getLocalBounds().toFloat(), 5.0f);
-        g.setColour (lineColour);
-        g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (0.5f), 5.0f, 1.0f);
+        const auto drawPanel = [&g] (juce::Rectangle<int> bounds,
+                                     juce::Colour fill)
+        {
+            g.setColour (fill);
+            g.fillRoundedRectangle (bounds.toFloat(), 5.0f);
+            g.setColour (lineColour);
+            g.drawRoundedRectangle (bounds.toFloat().reduced (0.5f),
+                                    5.0f, 1.0f);
+        };
 
-        auto title = getLocalBounds().reduced (10).removeFromTop (24);
+        drawPanel (browserPanelBounds, panelColour);
+        drawPanel (currentInfoPanelBounds,
+                   raisedPanelColour.darker (0.12f));
+
+        auto title = browserPanelBounds.reduced (10).removeFromTop (24);
         g.setColour (textColour);
         g.setFont (14.0f);
         const auto titleText =
@@ -1338,11 +1476,22 @@ public:
           : mode == SVDrummerAudioProcessor::BrowserMode::patterns ? "PATTERN LIBRARY"
                                                                    : "PROJECT LIBRARY";
         g.drawText (titleText, title, juce::Justification::centredLeft);
+
+        auto infoTitle = currentInfoPanelBounds.reduced (10).removeFromTop (20);
+        g.setColour (textColour);
+        g.setFont (14.0f);
+        g.drawText ("PROJECT INFO", infoTitle,
+                    juce::Justification::centredLeft, false);
     }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced (8);
+        auto layout = getLocalBounds();
+        currentInfoPanelBounds = layout.removeFromBottom (100);
+        layout.removeFromBottom (8);
+        browserPanelBounds = layout;
+
+        auto area = browserPanelBounds.reduced (8);
         auto titleRow = area.removeFromTop (24);
         refreshButton.setBounds (titleRow.removeFromRight (28).reduced (1));
         area.removeFromTop (4);
@@ -1395,6 +1544,10 @@ public:
 
         tree.setBounds (area);
         emptyLabel.setBounds (area.reduced (16));
+
+        auto currentInfo = currentInfoPanelBounds.reduced (10);
+        currentInfo.removeFromTop (20);
+        currentItemLabel.setBounds (currentInfo);
     }
 
     void refresh (bool preserveCurrentTreeState = true)
@@ -1456,6 +1609,28 @@ public:
 
         if (treeState != nullptr)
             tree.restoreOpennessState (*treeState, true);
+
+        refreshLoadedDisplay();
+    }
+
+    void refreshLoadedDisplay()
+    {
+        const int patternIndex = processor.getCurrentPatternIndex();
+        const auto text =
+            "KIT: " + processor.getCurrentKitName()
+            + "\nPATTERN "
+            + juce::String (patternIndex + 1).paddedLeft ('0', 2)
+            + ": " + processor.getPatternName (patternIndex)
+            + "\nPATTERN SET: " + processor.getCurrentPatternSetName()
+            + "\nPROJECT: " + processor.getCurrentProjectName();
+
+        currentItemLabel.setVisible (true);
+
+        if (currentItemLabel.getText() != text)
+        {
+            currentItemLabel.setText (text, juce::dontSendNotification);
+            currentItemLabel.setTooltip (text.replaceCharacters ("\n", " "));
+        }
     }
 
     void saveUiState()
@@ -1708,6 +1883,7 @@ private:
                 ? juce::String ("Browse to and load an SV-Drummer Kit")
                 : juce::String ("Browse to and load a Pattern into the selected slot"));
         refreshSaveState();
+        refreshLoadedDisplay();
 
         if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
         {
@@ -1815,16 +1991,22 @@ private:
 
     void chooseKitSaveLocation (bool saveAs)
     {
+        const auto currentFile = processor.getCurrentKitFile();
+
+        if (! saveAs && currentFile != juce::File())
+        {
+            saveKitFile (currentFile);
+            return;
+        }
+
         auto kitDirectory = processor.getPortableKitsDirectory();
         kitDirectory.createDirectory();
-        auto initialName = saveAs ? juce::String ("New Kit")
-                                  : processor.getCurrentKitName();
+        auto initialName = processor.getCurrentKitName();
 
         if (initialName.isEmpty())
             initialName = "New Kit";
 
-        auto initialFile = saveAs ? juce::File()
-                                  : processor.getCurrentKitFile();
+        auto initialFile = saveAs ? juce::File() : currentFile;
 
         if (initialFile == juce::File())
             initialFile = kitDirectory.getChildFile (
@@ -1847,38 +2029,53 @@ private:
                 if (! resultFile.hasFileExtension ("svkit"))
                     resultFile = resultFile.withFileExtension ("svkit");
 
-                const auto result = processor.saveKitToFile (resultFile);
-
-                if (result.failed())
-                {
-                    juce::AlertWindow::showMessageBoxAsync (
-                        juce::MessageBoxIconType::WarningIcon,
-                        "SV-Drummer Kit Not Saved",
-                        result.getErrorMessage());
-                    return;
-                }
-
-                refresh (false);
-                refreshSaveState();
+                saveKitFile (resultFile);
             });
+    }
+
+    void saveKitFile (const juce::File& file)
+    {
+        const auto result = processor.saveKitToFile (file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer Kit Not Saved",
+                result.getErrorMessage());
+            return;
+        }
+
+        refresh (false);
+        refreshSaveState();
     }
 
     void choosePatternSaveLocation (bool saveAs)
     {
         const int patternIndex = processor.getCurrentPatternIndex();
+        const auto currentFile = processor.getPatternFile (patternIndex);
+
+        if (! saveAs && currentFile != juce::File())
+        {
+            savePatternFile (patternIndex, currentFile);
+            return;
+        }
+
         auto patternsDirectory = processor.getPortablePatternsDirectory()
                                           .getChildFile ("Patterns");
         patternsDirectory.createDirectory();
         const auto genericName = "Pattern "
             + juce::String (patternIndex + 1).paddedLeft ('0', 2);
-        auto initialName = saveAs ? genericName
-                                  : processor.getPatternName (patternIndex);
+        auto initialName = processor.getPatternName (patternIndex);
 
         if (initialName.isEmpty())
             initialName = genericName;
 
-        const auto initialFile = patternsDirectory.getChildFile (
-            initialName + ".svpattern");
+        auto initialFile = saveAs ? juce::File() : currentFile;
+
+        if (initialFile == juce::File())
+            initialFile = patternsDirectory.getChildFile (
+                initialName + ".svpattern");
 
         folderChooser = std::make_unique<juce::FileChooser> (
             "Save SV-Drummer Pattern", initialFile, "*.svpattern", true);
@@ -1897,34 +2094,50 @@ private:
                 if (! resultFile.hasFileExtension ("svpattern"))
                     resultFile = resultFile.withFileExtension ("svpattern");
 
-                const auto result = processor.savePatternSlotToFile (
-                    patternIndex, resultFile);
-
-                if (result.failed())
-                {
-                    juce::AlertWindow::showMessageBoxAsync (
-                        juce::MessageBoxIconType::WarningIcon,
-                        "SV-Drummer Pattern Not Saved",
-                        result.getErrorMessage());
-                    return;
-                }
-
-                refresh (false);
+                savePatternFile (patternIndex, resultFile);
             });
+    }
+
+    void savePatternFile (int patternIndex, const juce::File& file)
+    {
+        const auto result = processor.savePatternSlotToFile (
+            patternIndex, file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer Pattern Not Saved",
+                result.getErrorMessage());
+            return;
+        }
+
+        refresh (false);
+        refreshSaveState();
     }
 
     void chooseProjectSaveLocation (bool saveAs)
     {
+        const auto currentFile = processor.getCurrentProjectFile();
+
+        if (! saveAs && currentFile != juce::File())
+        {
+            saveProjectFile (currentFile);
+            return;
+        }
+
         auto projectsDirectory = processor.getPortableProjectsDirectory();
         projectsDirectory.createDirectory();
-        auto initialName = saveAs ? juce::String ("New Project")
-                                  : processor.getCurrentProjectName();
+        auto initialName = processor.getCurrentProjectName();
 
         if (initialName.isEmpty())
             initialName = "New Project";
 
-        const auto initialFile = projectsDirectory.getChildFile (
-            initialName + ".svproject");
+        auto initialFile = saveAs ? juce::File() : currentFile;
+
+        if (initialFile == juce::File())
+            initialFile = projectsDirectory.getChildFile (
+                initialName + ".svproject");
 
         folderChooser = std::make_unique<juce::FileChooser> (
             "Save SV-Drummer Project", initialFile, "*.svproject", true);
@@ -1943,19 +2156,25 @@ private:
                 if (! resultFile.hasFileExtension ("svproject"))
                     resultFile = resultFile.withFileExtension ("svproject");
 
-                const auto result = processor.saveProjectToFile (resultFile);
-
-                if (result.failed())
-                {
-                    juce::AlertWindow::showMessageBoxAsync (
-                        juce::MessageBoxIconType::WarningIcon,
-                        "SV-Drummer Project Not Saved",
-                        result.getErrorMessage());
-                    return;
-                }
-
-                refresh (false);
+                saveProjectFile (resultFile);
             });
+    }
+
+    void saveProjectFile (const juce::File& file)
+    {
+        const auto result = processor.saveProjectToFile (file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer Project Not Saved",
+                result.getErrorMessage());
+            return;
+        }
+
+        refresh (false);
+        refreshSaveState();
     }
 
     void performSave()
@@ -2006,6 +2225,9 @@ private:
         "Open library folder", SVDrummerIconButton::Icon::openFolder };
     SampleBrowserTree tree;
     juce::Label emptyLabel;
+    juce::Label currentItemLabel;
+    juce::Rectangle<int> browserPanelBounds;
+    juce::Rectangle<int> currentInfoPanelBounds;
     std::unique_ptr<juce::FileChooser> folderChooser;
     SVDrummerAudioProcessor::BrowserMode mode =
         SVDrummerAudioProcessor::BrowserMode::samples;
@@ -3678,11 +3900,19 @@ public:
                          "RELEASE", 10.0, 1000.0, 1.0);
         configureSlider (compressorKneeSlider, compressorKneeLabel,
                          "KNEE", 0.0, 24.0, 0.1);
+        configureSlider (compressorGainSlider, compressorGainLabel,
+                         "GAIN", -24.0, 24.0, 0.1);
         configureSlider (saturationSlider, saturationLabel,
                          "SAT", 0.0, 1.0, 0.01);
         configureSlider (hardClipSlider, hardClipLabel,
                          "HARD CLIP", 0.0, 1.0, 0.01);
         setKnobAccent (curveSlider, curveKnobColour);
+
+        for (auto* slider : { &attackSlider, &decaySlider,
+                              &sustainSlider, &releaseSlider,
+                              &panSlider, &tuneSlider, &chokeSlider })
+            setKnobAccent (*slider, ampKnobColour);
+
         setKnobAccent (saturationSlider, saturationKnobColour);
         setKnobAccent (hardClipSlider, saturationKnobColour);
 
@@ -3696,7 +3926,8 @@ public:
                               &compressorRatioSlider,
                               &compressorAttackSlider,
                               &compressorReleaseSlider,
-                              &compressorKneeSlider })
+                              &compressorKneeSlider,
+                              &compressorGainSlider })
             setKnobAccent (*slider, compressorKnobColour);
 
         curveSlider.setMouseDragSensitivity (320);
@@ -3715,6 +3946,7 @@ public:
         compressorAttackSlider.setMouseDragSensitivity (400);
         compressorReleaseSlider.setMouseDragSensitivity (450);
         compressorKneeSlider.setMouseDragSensitivity (320);
+        compressorGainSlider.setMouseDragSensitivity (360);
         saturationSlider.setMouseDragSensitivity (320);
         hardClipSlider.setMouseDragSensitivity (320);
         curveSlider.setWheelStep (0.02);
@@ -3733,6 +3965,7 @@ public:
         compressorAttackSlider.setWheelStep (0.5);
         compressorReleaseSlider.setWheelStep (5.0);
         compressorKneeSlider.setWheelStep (0.5);
+        compressorGainSlider.setWheelStep (0.5);
         saturationSlider.setWheelStep (0.01);
         hardClipSlider.setWheelStep (0.01);
         filterCutoffSlider.setSkewFactorFromMidPoint (1000.0);
@@ -3811,11 +4044,16 @@ public:
         };
         compressorReleaseSlider.textFromValueFunction = [] (double value)
         {
-            return juce::String (juce::roundToInt (value)) + " ms";
+            return formatCompactMilliseconds (value);
         };
         compressorKneeSlider.textFromValueFunction = [] (double value)
         {
             return juce::String (value, 1) + " dB";
+        };
+        compressorGainSlider.textFromValueFunction = [] (double value)
+        {
+            return (value > 0.0 ? juce::String ("+") : juce::String())
+                 + juce::String (value, 1) + " dB";
         };
         saturationSlider.textFromValueFunction = [] (double value)
         {
@@ -3841,6 +4079,7 @@ public:
         compressorAttackSlider.updateText();
         compressorReleaseSlider.updateText();
         compressorKneeSlider.updateText();
+        compressorGainSlider.updateText();
         saturationSlider.updateText();
         hardClipSlider.updateText();
         curveSlider.onValueChange = [this]
@@ -3989,6 +4228,13 @@ public:
                 processor.setPadCompressorKneeDb (
                     padIndex,
                     static_cast<float> (compressorKneeSlider.getValue()));
+        };
+        compressorGainSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setPadCompressorGainDb (
+                    padIndex,
+                    static_cast<float> (compressorGainSlider.getValue()));
         };
         saturationSlider.onValueChange = [this]
         {
@@ -4221,6 +4467,9 @@ public:
         compressorKneeSlider.setValue (
             processor.getPadCompressorKneeDb (padIndex),
             juce::dontSendNotification);
+        compressorGainSlider.setValue (
+            processor.getPadCompressorGainDb (padIndex),
+            juce::dontSendNotification);
         saturationSlider.setValue (
             processor.getPadSaturationAmount (padIndex),
             juce::dontSendNotification);
@@ -4446,6 +4695,8 @@ public:
                     cellFor (compressorRows[1], 0, 3));
         layoutKnob (compressorReleaseLabel, compressorReleaseSlider,
                     cellFor (compressorRows[1], 1, 3));
+        layoutKnob (compressorGainLabel, compressorGainSlider,
+                    cellFor (compressorRows[1], 2, 3));
 
         const auto saturationRows = makeRows (saturationSectionBounds);
         layoutKnob (saturationLabel, saturationSlider,
@@ -4499,6 +4750,8 @@ private:
                     = processor.getPadCompressorReleaseMs (index);
                 resetCompressorKnees[static_cast<std::size_t> (index)]
                     = processor.getPadCompressorKneeDb (index);
+                resetCompressorGains[static_cast<std::size_t> (index)]
+                    = processor.getPadCompressorGainDb (index);
                 resetSaturationAmounts[static_cast<std::size_t> (index)]
                     = processor.getPadSaturationAmount (index);
                 resetHardClipAmounts[static_cast<std::size_t> (index)]
@@ -4542,6 +4795,8 @@ private:
             true, resetCompressorReleases[static_cast<std::size_t> (padIndex)]);
         compressorKneeSlider.setDoubleClickReturnValue (
             true, resetCompressorKnees[static_cast<std::size_t> (padIndex)]);
+        compressorGainSlider.setDoubleClickReturnValue (
+            true, resetCompressorGains[static_cast<std::size_t> (padIndex)]);
         saturationSlider.setDoubleClickReturnValue (
             true, resetSaturationAmounts[static_cast<std::size_t> (padIndex)]);
         hardClipSlider.setDoubleClickReturnValue (
@@ -4556,7 +4811,7 @@ private:
         double interval)
     {
         slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, true, 52, 14);
+        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, true, 72, 14);
         slider.setRange (minimum, maximum, interval);
         slider.setMouseDragSensitivity (80);
         slider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xff5fa3d1));
@@ -4570,8 +4825,7 @@ private:
         label.setText (labelText, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centredTop);
         label.setColour (juce::Label::textColourId, knobLabelColour);
-        label.setFont (juce::FontOptions (
-            knobLabelFontSize, juce::Font::bold));
+        label.setFont (makeKnobLabelFont());
         addAndMakeVisible (slider);
         addAndMakeVisible (label);
     }
@@ -4596,8 +4850,7 @@ private:
         label.setText (labelText, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centredTop);
         label.setColour (juce::Label::textColourId, knobLabelColour);
-        label.setFont (juce::FontOptions (
-            knobLabelFontSize, juce::Font::bold));
+        label.setFont (makeKnobLabelFont());
         addAndMakeVisible (combo);
         addAndMakeVisible (label);
     }
@@ -4638,6 +4891,7 @@ private:
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorAttacks {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorReleases {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorKnees {};
+    std::array<double, SVDrummerAudioProcessor::numberOfPads> resetCompressorGains {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetSaturationAmounts {};
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetHardClipAmounts {};
     std::uint64_t resetValuesRevision =
@@ -4666,12 +4920,13 @@ private:
     juce::Label compressorAttackLabel;
     juce::Label compressorReleaseLabel;
     juce::Label compressorKneeLabel;
+    juce::Label compressorGainLabel;
     juce::Label saturationLabel;
     juce::Label hardClipLabel;
     SVDrummerEnvelopeSlider curveSlider;
     SVDrummerEnvelopeSlider panSlider;
     SVDrummerEnvelopeSlider tuneSlider;
-    juce::Slider chokeSlider;
+    SVDrummerEnvelopeSlider chokeSlider;
     SVDrummerEnvelopeSlider attackSlider;
     SVDrummerEnvelopeSlider decaySlider;
     SVDrummerEnvelopeSlider sustainSlider;
@@ -4688,6 +4943,7 @@ private:
     SVDrummerEnvelopeSlider compressorAttackSlider;
     SVDrummerEnvelopeSlider compressorReleaseSlider;
     SVDrummerEnvelopeSlider compressorKneeSlider;
+    SVDrummerEnvelopeSlider compressorGainSlider;
     SVDrummerEnvelopeSlider saturationSlider;
     SVDrummerEnvelopeSlider hardClipSlider;
     juce::TextButton reverseButton { "REVERSE" };
@@ -4848,6 +5104,15 @@ public:
                     false);
     }
 
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (processor.getPadSample (padIndex) != nullptr)
+            return;
+
+        g.setColour (juce::Colours::black.withAlpha (0.38f));
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 3.5f);
+    }
+
     void resized() override
     {
         auto area = getLocalBounds().reduced (5);
@@ -4892,6 +5157,7 @@ private:
                          double defaultValue)
     {
         slider.setSliderStyle (juce::Slider::LinearVertical);
+        slider.getProperties().set ("svMixerThinTrack", true);
         slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         slider.setRange (minimum, maximum, interval);
         slider.setDoubleClickReturnValue (true, defaultValue);
@@ -4965,6 +5231,12 @@ public:
                          0.0, 0.95, 0.01);
         configureSlider (delayMixSlider, delayMixLabel, "MIX",
                          0.0, 1.0, 0.01);
+        configureSlider (delayDuckSlider, delayDuckLabel, "DUCK",
+                         0.0, 1.0, 0.01);
+        configureSlider (delayDuckAttackSlider, delayDuckAttackLabel,
+                         "ATTACK", 0.1, 250.0, 0.1);
+        configureSlider (delayDuckReleaseSlider, delayDuckReleaseLabel,
+                         "RELEASE", 10.0, 2000.0, 1.0);
         configureSlider (reverbSizeSlider, reverbSizeLabel, "SIZE",
                          0.0, 1.0, 0.01);
         configureSlider (reverbDampingSlider, reverbDampingLabel, "DAMPING",
@@ -4973,10 +5245,25 @@ public:
                          0.0, 1.0, 0.01);
         configureSlider (reverbMixSlider, reverbMixLabel, "MIX",
                          0.0, 1.0, 0.01);
+        configureSlider (reverbDuckSlider, reverbDuckLabel, "DUCK",
+                         0.0, 1.0, 0.01);
+
+        for (auto* slider : { &delayTimeSlider, &delayFeedbackSlider,
+                              &delayDuckSlider, &delayDuckAttackSlider,
+                              &delayDuckReleaseSlider, &delayMixSlider })
+            slider->setColour (juce::Slider::rotarySliderFillColourId,
+                               delayKnobColour);
+
+        for (auto* slider : { &reverbSizeSlider, &reverbDampingSlider,
+                              &reverbWidthSlider, &reverbDuckSlider,
+                              &reverbMixSlider })
+            slider->setColour (juce::Slider::rotarySliderFillColourId,
+                               reverbKnobColour);
 
         delayTimeSlider.setMouseDragSensitivity (500);
 
         for (auto* slider : { &delayFeedbackSlider, &delayMixSlider,
+                              &delayDuckSlider, &reverbDuckSlider,
                               &reverbSizeSlider, &reverbDampingSlider,
                               &reverbWidthSlider, &reverbMixSlider })
         {
@@ -4988,6 +5275,29 @@ public:
             };
             slider->updateText();
         }
+
+        delayDuckAttackSlider.setMouseDragSensitivity (400);
+        delayDuckAttackSlider.setWheelStep (0.5);
+        delayDuckAttackSlider.setSkewFactorFromMidPoint (10.0);
+        delayDuckAttackSlider.setDoubleClickReturnValue (true, 10.0);
+        delayDuckAttackSlider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (value, value < 10.0 ? 1 : 0) + " ms";
+        };
+        delayDuckAttackSlider.updateText();
+
+        delayDuckReleaseSlider.setMouseDragSensitivity (500);
+        delayDuckReleaseSlider.setWheelStep (5.0);
+        delayDuckReleaseSlider.setSkewFactorFromMidPoint (250.0);
+        delayDuckReleaseSlider.setDoubleClickReturnValue (true, 250.0);
+        delayDuckReleaseSlider.textFromValueFunction = [] (double value)
+        {
+            return formatCompactMilliseconds (value);
+        };
+        delayDuckReleaseSlider.updateText();
+
+        delayDuckSlider.setDoubleClickReturnValue (true, 0.0);
+        reverbDuckSlider.setDoubleClickReturnValue (true, 0.0);
 
         delayEnableButton.onClick = [this]
         {
@@ -5001,15 +5311,10 @@ public:
                 processor.setGlobalReverbEnabled (
                     reverbEnableButton.getToggleState());
         };
-        delaySyncButton.setClickingTogglesState (true);
-        delaySyncButton.setColour (juce::TextButton::buttonColourId,
-                                   raisedPanelColour.darker (0.18f));
-        delaySyncButton.setColour (juce::TextButton::buttonOnColourId,
-                                   juce::Colour (0xff3e536a));
-        delaySyncButton.setColour (juce::TextButton::textColourOffId,
-                                   mutedTextColour);
-        delaySyncButton.setColour (juce::TextButton::textColourOnId,
-                                   juce::Colours::white);
+        delaySyncLabel.setText ("SYNC", juce::dontSendNotification);
+        delaySyncLabel.setJustificationType (juce::Justification::centredTop);
+        delaySyncLabel.setColour (juce::Label::textColourId, knobLabelColour);
+        delaySyncLabel.setFont (makeKnobLabelFont());
         delaySyncButton.onClick = [this]
         {
             if (! updating)
@@ -5042,6 +5347,24 @@ public:
                 processor.setGlobalDelayMix (
                     static_cast<float> (delayMixSlider.getValue()));
         };
+        delayDuckSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalDelayDuck (
+                    static_cast<float> (delayDuckSlider.getValue()));
+        };
+        delayDuckAttackSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalDelayDuckAttackMs (
+                    static_cast<float> (delayDuckAttackSlider.getValue()));
+        };
+        delayDuckReleaseSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalDelayDuckReleaseMs (
+                    static_cast<float> (delayDuckReleaseSlider.getValue()));
+        };
         reverbSizeSlider.onValueChange = [this]
         {
             if (! updating)
@@ -5066,10 +5389,17 @@ public:
                 processor.setGlobalReverbMix (
                     static_cast<float> (reverbMixSlider.getValue()));
         };
+        reverbDuckSlider.onValueChange = [this]
+        {
+            if (! updating)
+                processor.setGlobalReverbDuck (
+                    static_cast<float> (reverbDuckSlider.getValue()));
+        };
 
         addAndMakeVisible (delayEnableButton);
         addAndMakeVisible (reverbEnableButton);
         addAndMakeVisible (delaySyncButton);
+        addAndMakeVisible (delaySyncLabel);
 
         for (int padIndex = 0;
              padIndex < SVDrummerAudioProcessor::numberOfPads;
@@ -5093,7 +5423,6 @@ public:
         const bool syncEnabled = processor.isGlobalDelaySyncEnabled();
         delaySyncButton.setToggleState (syncEnabled,
                                         juce::dontSendNotification);
-        delaySyncButton.setButtonText (syncEnabled ? "SYNC" : "FREE");
 
         if (syncEnabled != displayedDelaySyncMode)
             configureDelayTimeMode (syncEnabled);
@@ -5106,6 +5435,14 @@ public:
                                       juce::dontSendNotification);
         delayMixSlider.setValue (processor.getGlobalDelayMix(),
                                  juce::dontSendNotification);
+        delayDuckSlider.setValue (processor.getGlobalDelayDuck(),
+                                  juce::dontSendNotification);
+        delayDuckAttackSlider.setValue (
+            processor.getGlobalDelayDuckAttackMs(),
+            juce::dontSendNotification);
+        delayDuckReleaseSlider.setValue (
+            processor.getGlobalDelayDuckReleaseMs(),
+            juce::dontSendNotification);
         reverbEnableButton.setToggleState (processor.isGlobalReverbEnabled(),
                                            juce::dontSendNotification);
         reverbSizeSlider.setValue (processor.getGlobalReverbSize(),
@@ -5116,6 +5453,8 @@ public:
                                     juce::dontSendNotification);
         reverbMixSlider.setValue (processor.getGlobalReverbMix(),
                                   juce::dontSendNotification);
+        reverbDuckSlider.setValue (processor.getGlobalReverbDuck(),
+                                   juce::dontSendNotification);
 
         for (auto& channel : mixerChannels)
             if (channel != nullptr)
@@ -5131,7 +5470,9 @@ public:
                                 5.0f, 1.0f);
 
         const auto drawEffectPanel = [&g] (juce::Rectangle<int> bounds,
-                                            const juce::String& title)
+                                            const juce::String& title,
+                                            int titleHeight,
+                                            int titleOffsetY = 0)
         {
             g.setColour (raisedPanelColour.darker (0.20f));
             g.fillRoundedRectangle (bounds.toFloat(), 4.0f);
@@ -5140,20 +5481,23 @@ public:
                                     4.0f, 1.0f);
             g.setColour (textColour);
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-            g.drawText (title, bounds.removeFromTop (28).reduced (12, 0),
+            auto titleBounds = bounds.removeFromTop (titleHeight).reduced (12, 0);
+            titleBounds.translate (0, titleOffsetY);
+            g.drawText (title,
+                        titleBounds,
                         juce::Justification::centredLeft, false);
         };
 
-        drawEffectPanel (delayPanelBounds, "DELAY");
-        drawEffectPanel (reverbPanelBounds, "REVERB");
-        drawEffectPanel (mixerPanelBounds, "MIXER");
+        drawEffectPanel (delayPanelBounds, "DELAY", 18, 2);
+        drawEffectPanel (reverbPanelBounds, "REVERB", 18, 2);
+        drawEffectPanel (mixerPanelBounds, "MIXER", 28);
     }
 
     void resized() override
     {
         auto area = getLocalBounds().reduced (14);
         const int gap = 12;
-        auto effectsRow = area.removeFromTop (126);
+        auto effectsRow = area.removeFromTop (92);
         area.removeFromTop (gap);
         mixerPanelBounds = area;
         const int panelWidth = (effectsRow.getWidth() - gap) / 2;
@@ -5162,26 +5506,36 @@ public:
         reverbPanelBounds = effectsRow;
 
         delayEnableButton.setBounds (delayPanelBounds.getRight() - 28,
-                                     delayPanelBounds.getY() + 7, 14, 14);
+                                     delayPanelBounds.getY() + 4, 14, 14);
         reverbEnableButton.setBounds (reverbPanelBounds.getRight() - 28,
-                                      reverbPanelBounds.getY() + 7, 14, 14);
+                                      reverbPanelBounds.getY() + 4, 14, 14);
 
-        auto delayControls = delayPanelBounds.reduced (18, 16);
-        delayControls.removeFromTop (32);
-        const auto delayKnobRow = getKnobRowBounds (delayControls, 3);
-        layoutKnobRow (delayControls,
+        auto delayControls = delayPanelBounds;
+        delayControls.removeFromTop (20);
+        auto delayRow = juce::Rectangle<int> (458, 66).withCentre (
+            { delayControls.getCentreX(), delayControls.getY() + 33 });
+        auto syncControl = delayRow.removeFromLeft (49);
+        delayRow.removeFromLeft (3);
+        syncControl.translate (6, 0);
+        delaySyncLabel.setBounds (syncControl.removeFromTop (13));
+        delaySyncButton.setBounds (
+            syncControl.getCentreX() - 7, syncControl.getY() + 12, 14, 14);
+        layoutKnobRow (delayRow,
                        { { &delayTimeLabel, &delayTimeSlider },
                          { &delayFeedbackLabel, &delayFeedbackSlider },
-                         { &delayMixLabel, &delayMixSlider } });
-        delaySyncButton.setBounds (delayKnobRow.getX() - 63,
-                                   delayKnobRow.getY() + 23, 56, 22);
+                         { &delayDuckLabel, &delayDuckSlider },
+                         { &delayDuckAttackLabel, &delayDuckAttackSlider },
+                         { &delayDuckReleaseLabel,
+                           &delayDuckReleaseSlider },
+                         { &delayMixLabel, &delayMixSlider } }, 2);
 
-        auto reverbControls = reverbPanelBounds.reduced (18, 16);
-        reverbControls.removeFromTop (32);
+        auto reverbControls = reverbPanelBounds.reduced (18, 0);
+        reverbControls.removeFromTop (20);
         layoutKnobRow (reverbControls,
                        { { &reverbSizeLabel, &reverbSizeSlider },
                          { &reverbDampingLabel, &reverbDampingSlider },
                          { &reverbWidthLabel, &reverbWidthSlider },
+                         { &reverbDuckLabel, &reverbDuckSlider },
                          { &reverbMixLabel, &reverbMixSlider } });
 
         auto mixerArea = mixerPanelBounds.reduced (8);
@@ -5245,7 +5599,7 @@ private:
             delayTimeSlider.setDoubleClickReturnValue (true, 250.0);
             delayTimeSlider.textFromValueFunction = [] (double value)
             {
-                return juce::String (juce::roundToInt (value)) + " ms";
+                return formatCompactMilliseconds (value);
             };
         }
 
@@ -5260,7 +5614,7 @@ private:
                           double interval)
     {
         slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, true, 52, 14);
+        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, true, 64, 14);
         slider.setRange (minimum, maximum, interval);
         slider.setColour (juce::Slider::rotarySliderFillColourId,
                           juce::Colour (0xff5fa3d1));
@@ -5273,58 +5627,66 @@ private:
         label.setText (labelText, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centredTop);
         label.setColour (juce::Label::textColourId, knobLabelColour);
-        label.setFont (juce::FontOptions (
-            knobLabelFontSize, juce::Font::bold));
+        label.setFont (makeKnobLabelFont());
         addAndMakeVisible (slider);
         addAndMakeVisible (label);
     }
 
     static void layoutKnobRow (juce::Rectangle<int> bounds,
-                               std::initializer_list<Knob> knobs)
+                               std::initializer_list<Knob> knobs,
+                               int knobGap = 4)
     {
         const int count = static_cast<int> (knobs.size());
-        auto row = getKnobRowBounds (bounds, count);
+        auto row = getKnobRowBounds (bounds, count, knobGap);
 
         for (const auto& knob : knobs)
         {
             auto cell = row.removeFromLeft (66);
             knob.label->setBounds (cell.removeFromTop (13));
             knob.slider->setBounds (cell);
-            row.removeFromLeft (4);
+            row.removeFromLeft (knobGap);
         }
     }
 
     static juce::Rectangle<int> getKnobRowBounds (
-        juce::Rectangle<int> bounds, int count)
+        juce::Rectangle<int> bounds, int count, int knobGap = 4)
     {
         constexpr int knobWidth = 66;
         constexpr int knobHeight = 66;
-        constexpr int knobGap = 4;
         const int rowWidth = knobWidth * count
                            + knobGap * juce::jmax (0, count - 1);
         return juce::Rectangle<int> (
             rowWidth, knobHeight).withCentre (
-                { bounds.getCentreX(), bounds.getY() + knobHeight / 2 + 4 });
+                { bounds.getCentreX(), bounds.getY() + knobHeight / 2 });
     }
 
     SVDrummerAudioProcessor& processor;
     SVDrummerLedButton delayEnableButton { "Delay on or off" };
     SVDrummerLedButton reverbEnableButton { "Reverb on or off" };
-    juce::TextButton delaySyncButton { "FREE" };
+    SVDrummerLedButton delaySyncButton { "Delay tempo sync on or off" };
+    juce::Label delaySyncLabel;
     juce::Label delayTimeLabel;
     juce::Label delayFeedbackLabel;
     juce::Label delayMixLabel;
+    juce::Label delayDuckLabel;
+    juce::Label delayDuckAttackLabel;
+    juce::Label delayDuckReleaseLabel;
     juce::Label reverbSizeLabel;
     juce::Label reverbDampingLabel;
     juce::Label reverbWidthLabel;
     juce::Label reverbMixLabel;
+    juce::Label reverbDuckLabel;
     SVDrummerEnvelopeSlider delayTimeSlider;
     SVDrummerEnvelopeSlider delayFeedbackSlider;
     SVDrummerEnvelopeSlider delayMixSlider;
+    SVDrummerEnvelopeSlider delayDuckSlider;
+    SVDrummerEnvelopeSlider delayDuckAttackSlider;
+    SVDrummerEnvelopeSlider delayDuckReleaseSlider;
     SVDrummerEnvelopeSlider reverbSizeSlider;
     SVDrummerEnvelopeSlider reverbDampingSlider;
     SVDrummerEnvelopeSlider reverbWidthSlider;
     SVDrummerEnvelopeSlider reverbMixSlider;
+    SVDrummerEnvelopeSlider reverbDuckSlider;
     juce::Rectangle<int> delayPanelBounds;
     juce::Rectangle<int> reverbPanelBounds;
     juce::Rectangle<int> mixerPanelBounds;
@@ -5350,7 +5712,7 @@ public:
             juce::jmin (getWidth(), getHeight())) - 1.0f;
         auto bounds = juce::Rectangle<float> (diameter, diameter)
                           .withCentre (getLocalBounds().toFloat().getCentre());
-        auto background = getToggleState() ? juce::Colour (0xff3e536a)
+        auto background = getToggleState() ? juce::Colour (0xff3c9fc1)
                                             : raisedPanelColour;
 
         if (down)
@@ -5600,19 +5962,29 @@ private:
 
     void saveToLibrary (bool saveAs)
     {
+        const auto currentFile = processor.getPatternFile (patternIndex);
+
+        if (! saveAs && currentFile != juce::File())
+        {
+            savePatternFile (currentFile);
+            return;
+        }
+
         auto patternsDirectory = processor.getPortablePatternsDirectory()
                                           .getChildFile ("Patterns");
         patternsDirectory.createDirectory();
         const auto genericName = "Pattern "
             + juce::String (patternIndex + 1).paddedLeft ('0', 2);
-        auto initialName = saveAs ? genericName
-                                  : processor.getPatternName (patternIndex);
+        auto initialName = processor.getPatternName (patternIndex);
 
         if (initialName.isEmpty())
             initialName = genericName;
 
-        const auto initialFile = patternsDirectory.getChildFile (
-            initialName + ".svpattern");
+        auto initialFile = saveAs ? juce::File() : currentFile;
+
+        if (initialFile == juce::File())
+            initialFile = patternsDirectory.getChildFile (
+                initialName + ".svpattern");
 
         patternSaveChooser = std::make_unique<juce::FileChooser> (
             "Save SV-Drummer Pattern", initialFile, "*.svpattern", true);
@@ -5635,21 +6007,26 @@ private:
                 if (! resultFile.hasFileExtension ("svpattern"))
                     resultFile = resultFile.withFileExtension ("svpattern");
 
-                const auto result = safeThis->processor.savePatternSlotToFile (
-                    safeThis->patternIndex, resultFile);
-
-                if (result.failed())
-                {
-                    juce::AlertWindow::showMessageBoxAsync (
-                        juce::MessageBoxIconType::WarningIcon,
-                        "SV-Drummer Pattern Not Saved",
-                        result.getErrorMessage());
-                }
-                else if (safeThis->onPatternLibraryChanged)
-                {
-                    safeThis->onPatternLibraryChanged();
-                }
+                safeThis->savePatternFile (resultFile);
             });
+    }
+
+    void savePatternFile (const juce::File& file)
+    {
+        const auto result = processor.savePatternSlotToFile (
+            patternIndex, file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer Pattern Not Saved",
+                result.getErrorMessage());
+        }
+        else if (onPatternLibraryChanged)
+        {
+            onPatternLibraryChanged();
+        }
     }
 
     void loadPattern (const juce::File& file)
@@ -5901,6 +6278,8 @@ public:
 
         configureSequencerKnob (lengthSlider, 1.0,
                                 static_cast<double> (SVDrummerAudioProcessor::maximumPatternBars));
+        lengthSlider.setColour (juce::Slider::textBoxTextColourId,
+                                juce::Colours::transparentBlack);
         lengthSlider.textFromValueFunction = [] (double value)
         {
             const int bars = juce::roundToInt (value);
@@ -5918,6 +6297,8 @@ public:
         };
 
         configureSequencerKnob (viewSlider, 0.0, 2.0);
+        viewSlider.setColour (juce::Slider::textBoxTextColourId,
+                              juce::Colours::transparentBlack);
         viewSlider.setDoubleClickReturnValue (true, 0.0);
         viewSlider.textFromValueFunction = [] (double value)
         {
@@ -5940,6 +6321,8 @@ public:
         configureSequencerKnob (
             divisionSlider, 0.0,
             static_cast<double> (SVDrummerAudioProcessor::sequencerDivisionCount - 1));
+        divisionSlider.setColour (juce::Slider::textBoxTextColourId,
+                                  juce::Colours::transparentBlack);
         divisionSlider.textFromValueFunction = [] (double value)
         {
             return SVDrummerAudioProcessor::getSequencerDivisionName (
@@ -5957,6 +6340,8 @@ public:
         };
 
         configureSequencerKnob (loopLengthSlider, 1.0, 16.0);
+        loopLengthSlider.setColour (juce::Slider::textBoxTextColourId,
+                                    juce::Colours::transparentBlack);
         loopLengthSlider.textFromValueFunction = [] (double value)
         {
             const int steps = juce::roundToInt (value);
@@ -6022,6 +6407,7 @@ public:
         configureLabel (viewLabel, "VIEW");
         configureLabel (divisionLabel, "DIV");
         configureLabel (loopLabel, "LOOP");
+        configureLabel (nudgeLabel, "NUDGE");
         configureLabel (padVolumeLabel, "PAD VOL");
         configureLabel (padPanLabel, "PAD PAN");
         configureLabel (padTuneLabel, "PAD TUNE");
@@ -6040,8 +6426,28 @@ public:
             syncLaneControls();
         };
 
+        for (auto* button : { &nudgeLeftButton, &nudgeRightButton })
+        {
+            button->setColour (juce::TextButton::buttonColourId,
+                               raisedPanelColour);
+            button->setColour (juce::TextButton::textColourOffId,
+                               juce::Colours::white);
+        }
+
+        nudgeLeftButton.onClick = [this]
+        {
+            processor.nudgeSequenceLane (selectedLane, -1);
+            repaint();
+        };
+        nudgeRightButton.onClick = [this]
+        {
+            processor.nudgeSequenceLane (selectedLane, 1);
+            repaint();
+        };
+
         for (auto* button : { &midiModeButton, &syncModeButton,
-                              &laneButton, &padPlaybackModeButton })
+                              &laneButton, &nudgeLeftButton,
+                              &nudgeRightButton, &padPlaybackModeButton })
             button->getProperties().set (
                 juce::Identifier ("svDrummerBrightOutline"), true);
 
@@ -6080,6 +6486,9 @@ public:
         addAndMakeVisible (divisionSlider);
         addAndMakeVisible (loopLabel);
         addAndMakeVisible (loopLengthSlider);
+        addAndMakeVisible (nudgeLabel);
+        addAndMakeVisible (nudgeLeftButton);
+        addAndMakeVisible (nudgeRightButton);
         addAndMakeVisible (padVolumeLabel);
         addAndMakeVisible (padVolumeSlider);
         addAndMakeVisible (padPanLabel);
@@ -6174,7 +6583,7 @@ public:
         drawBeatGrid (g);
         drawSequenceRows (g);
         drawPlayhead (g);
-        drawPadKnobValues (g);
+        drawSequencerKnobValues (g);
 
         auto patternArea = patternBounds;
         auto patternLabel = patternArea.removeFromLeft (laneLabelWidth);
@@ -6190,11 +6599,11 @@ public:
 
         auto controls = area.removeFromTop (66);
         controls.translate (0, -3);
-        constexpr int transportSize = 40;
+        constexpr int transportSize = 45;
         const int controlY = controls.getY()
                            + (controls.getHeight() - transportSize) / 2;
         enableButton.setBounds (
-            controls.removeFromLeft (44).withY (controlY).withHeight (transportSize)
+            controls.removeFromLeft (49).withY (controlY).withHeight (transportSize)
                     .withSizeKeepingCentre (transportSize, transportSize));
         controls.removeFromLeft (8);
 
@@ -6210,22 +6619,32 @@ public:
             syncModeGroup.withY (controlY + 6).withHeight (27).reduced (3, 0));
         controls.removeFromLeft (6);
 
-        auto placeKnob = [&controls] (juce::Label& label, juce::Slider& slider)
+        auto placeKnob = [&controls] (juce::Label& label,
+                                      juce::Slider& slider,
+                                      juce::Rectangle<int>& valueBounds)
         {
             auto group = controls.removeFromLeft (66);
             label.setBounds (group.removeFromTop (13));
             slider.setBounds (group);
+            valueBounds = slider.getBounds().removeFromBottom (14);
             controls.removeFromLeft (4);
         };
 
-        placeKnob (lengthLabel, lengthSlider);
-        placeKnob (viewLabel, viewSlider);
+        placeKnob (lengthLabel, lengthSlider, lengthValueBounds);
+        placeKnob (viewLabel, viewSlider, viewValueBounds);
         laneButton.setBounds (controls.removeFromLeft (72)
                                       .withY (controlY + 6).withHeight (27));
         controls.removeFromLeft (8);
-        placeKnob (divisionLabel, divisionSlider);
-        placeKnob (loopLabel, loopLengthSlider);
-        controls.removeFromLeft (8);
+        placeKnob (divisionLabel, divisionSlider, divisionValueBounds);
+        placeKnob (loopLabel, loopLengthSlider, loopValueBounds);
+
+        auto nudgeGroup = controls.removeFromLeft (58);
+        nudgeLabel.setBounds (nudgeGroup.removeFromTop (13));
+        auto nudgeButtons = nudgeGroup.withY (controlY + 6).withHeight (27);
+        nudgeLeftButton.setBounds (nudgeButtons.removeFromLeft (27));
+        nudgeButtons.removeFromLeft (4);
+        nudgeRightButton.setBounds (nudgeButtons.removeFromLeft (27));
+        controls.removeFromLeft (4);
 
         auto placePadKnob = [&controls] (juce::Label& label,
                                          juce::Slider& slider,
@@ -6383,7 +6802,7 @@ public:
         if (wheel.deltaY != 0.0f
             && laneButton.getBounds().contains (event.getPosition()))
         {
-            selectLane (selectedLane + (wheel.deltaY > 0.0f ? 1 : -1));
+            selectLane (selectedLane + (wheel.deltaY < 0.0f ? 1 : -1));
             return;
         }
 
@@ -6529,17 +6948,27 @@ private:
 
     void savePatternSetToLibrary (bool saveAs)
     {
+        const auto currentFile = processor.getCurrentPatternSetFile();
+
+        if (! saveAs && currentFile != juce::File())
+        {
+            savePatternSetFile (currentFile);
+            return;
+        }
+
         auto patternSetsDirectory = processor.getPortablePatternsDirectory()
                                             .getChildFile ("Pattern Sets");
         patternSetsDirectory.createDirectory();
-        auto initialName = saveAs ? juce::String ("New Pattern Set")
-                                  : processor.getCurrentPatternSetName();
+        auto initialName = processor.getCurrentPatternSetName();
 
         if (initialName.isEmpty())
             initialName = "New Pattern Set";
 
-        const auto initialFile = patternSetsDirectory.getChildFile (
-            initialName + ".svpatternset");
+        auto initialFile = saveAs ? juce::File() : currentFile;
+
+        if (initialFile == juce::File())
+            initialFile = patternSetsDirectory.getChildFile (
+                initialName + ".svpatternset");
 
         patternSetSaveChooser = std::make_unique<juce::FileChooser> (
             "Save SV-Drummer Pattern Set", initialFile, "*.svpatternset", true);
@@ -6562,21 +6991,25 @@ private:
                 if (! resultFile.hasFileExtension ("svpatternset"))
                     resultFile = resultFile.withFileExtension ("svpatternset");
 
-                const auto result = safeThis->processor.savePatternSetToFile (
-                    resultFile);
-
-                if (result.failed())
-                {
-                    juce::AlertWindow::showMessageBoxAsync (
-                        juce::MessageBoxIconType::WarningIcon,
-                        "SV-Drummer Pattern Set Not Saved",
-                        result.getErrorMessage());
-                }
-                else if (safeThis->onPatternLibraryChanged)
-                {
-                    safeThis->onPatternLibraryChanged();
-                }
+                safeThis->savePatternSetFile (resultFile);
             });
+    }
+
+    void savePatternSetFile (const juce::File& file)
+    {
+        const auto result = processor.savePatternSetToFile (file);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer Pattern Set Not Saved",
+                result.getErrorMessage());
+        }
+        else if (onPatternLibraryChanged)
+        {
+            onPatternLibraryChanged();
+        }
     }
 
     void choosePatternSetToLoad()
@@ -6645,11 +7078,19 @@ private:
         }
     }
 
-    void drawPadKnobValues (juce::Graphics& g)
+    void drawSequencerKnobValues (juce::Graphics& g)
     {
         g.setColour (knobValueColour);
-        g.setFont (juce::FontOptions (
-            knobValueFontSize, juce::Font::bold));
+        g.setFont (makeKnobValueFont());
+        g.drawText (lengthSlider.getTextFromValue (lengthSlider.getValue()),
+                    lengthValueBounds, juce::Justification::centred, false);
+        g.drawText (viewSlider.getTextFromValue (viewSlider.getValue()),
+                    viewValueBounds, juce::Justification::centred, false);
+        g.drawText (divisionSlider.getTextFromValue (divisionSlider.getValue()),
+                    divisionValueBounds, juce::Justification::centred, false);
+        g.drawText (loopLengthSlider.getTextFromValue (
+                        loopLengthSlider.getValue()),
+                    loopValueBounds, juce::Justification::centred, false);
         g.drawText (padVolumeSlider.getTextFromValue (
                         padVolumeSlider.getValue()),
                     padVolumeValueBounds, juce::Justification::centred, false);
@@ -6685,8 +7126,7 @@ private:
         label.setText (text, juce::dontSendNotification);
         label.setJustificationType (juce::Justification::centred);
         label.setColour (juce::Label::textColourId, knobLabelColour);
-        label.setFont (juce::FontOptions (
-            knobLabelFontSize, juce::Font::bold));
+        label.setFont (makeKnobLabelFont());
     }
 
     void syncFromProcessor()
@@ -6768,7 +7208,8 @@ private:
             slider->setColour (juce::Slider::rotarySliderFillColourId,
                                padAccent);
 
-        for (auto* label : { &padVolumeLabel, &padPanLabel, &padTuneLabel,
+        for (auto* label : { &divisionLabel, &loopLabel, &nudgeLabel,
+                             &padVolumeLabel, &padPanLabel, &padTuneLabel,
                              &padPlaybackModeLabel })
             label->setColour (juce::Label::textColourId,
                               padAccent.brighter (0.20f));
@@ -6967,6 +7408,11 @@ private:
                 ? baseAccent.withSaturation (0.18f).darker (0.20f)
                 : baseAccent;
             const float muteScale = visuallyMuted ? 0.48f : 1.0f;
+            const int division = processor.getLaneDivision (lane);
+            const int stepsPerBar =
+                SVDrummerAudioProcessor::getSequencerStepsPerBar (division);
+            const int loopLength = juce::jmax (
+                1, processor.getLaneLoopLength (lane));
 
             g.setColour (lane == selectedLane
                            ? accent.withAlpha (0.72f * muteScale)
@@ -6975,8 +7421,12 @@ private:
 
             auto laneNumber = label.reduced (2.0f, 1.8f);
             laneNumber.setWidth (23.0f);
-            auto divisionText = label;
-            divisionText.setLeft (laneNumber.getRight() + 4.0f);
+            auto laneDetails = label;
+            laneDetails.setLeft (laneNumber.getRight() + 4.0f);
+            laneDetails.reduce (1.0f, 0.0f);
+            auto lengthText = laneDetails.removeFromRight (29.0f);
+            laneDetails.removeFromRight (4.0f);
+            const auto divisionText = laneDetails;
             g.setColour (juce::Colours::black.withAlpha (0.50f));
             g.fillRoundedRectangle (laneNumber, 1.5f);
             g.setColour (juce::Colours::white.withAlpha (
@@ -6986,16 +7436,31 @@ private:
                 juce::Font::bold));
             g.drawText (juce::String (lane + 1), laneNumber.toNearestInt(),
                         juce::Justification::centred, false);
-            g.drawFittedText (
+            g.drawText (
                 SVDrummerAudioProcessor::getSequencerDivisionName (
-                    processor.getLaneDivision (lane)),
+                    division),
                 divisionText.toNearestInt().reduced (2, 0),
-                juce::Justification::centred, 1);
+                juce::Justification::centred, false);
 
-            const int division = processor.getLaneDivision (lane);
-            const int stepsPerBar = SVDrummerAudioProcessor::getSequencerStepsPerBar (division);
+            juce::String barsText;
+
+            if (loopLength % stepsPerBar == 0)
+            {
+                barsText = juce::String (loopLength / stepsPerBar) + "b";
+            }
+            else
+            {
+                barsText = juce::String (
+                    static_cast<double> (loopLength)
+                        / static_cast<double> (stepsPerBar),
+                    2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".")
+                    + "b";
+            }
+
+            g.drawText (barsText, lengthText.toNearestInt(),
+                        juce::Justification::centred, false);
+
             const int visibleSteps = juce::jmax (1, barsShown * stepsPerBar);
-            const int loopLength = juce::jmax (1, processor.getLaneLoopLength (lane));
             const float cellWidth = row.getWidth() / static_cast<float> (visibleSteps);
             for (int visibleStep = 0; visibleStep < visibleSteps; ++visibleStep)
             {
@@ -7201,6 +7666,9 @@ private:
     juce::Slider divisionSlider;
     juce::Label loopLabel;
     juce::Slider loopLengthSlider;
+    juce::Label nudgeLabel;
+    juce::TextButton nudgeLeftButton { "<" };
+    juce::TextButton nudgeRightButton { ">" };
     juce::Label padVolumeLabel;
     juce::Slider padVolumeSlider;
     juce::Label padPanLabel;
@@ -7226,12 +7694,16 @@ private:
     juce::Rectangle<int> rulerBounds;
     juce::Rectangle<int> sequenceRowsBounds;
     juce::Rectangle<int> patternBounds;
+    juce::Rectangle<int> lengthValueBounds;
+    juce::Rectangle<int> viewValueBounds;
+    juce::Rectangle<int> divisionValueBounds;
+    juce::Rectangle<int> loopValueBounds;
     juce::Rectangle<int> padVolumeValueBounds;
     juce::Rectangle<int> padPanValueBounds;
     juce::Rectangle<int> padTuneValueBounds;
     int selectedLane = 0;
     int visibleBars = 1;
-    int laneLabelWidth = 74;
+    int laneLabelWidth = 96;
     int gestureLane = -1;
     int gestureVelocity = 0;
     int lastGestureVisibleStep = -1;
@@ -7256,6 +7728,46 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
 
     logoImage = juce::ImageFileFormat::loadFrom (
         BinaryData::logo_png, BinaryData::logo_pngSize);
+
+    masterVolumeLabel.setText ("VOLUME", juce::dontSendNotification);
+    masterVolumeLabel.setJustificationType (juce::Justification::centredRight);
+    masterVolumeLabel.setColour (juce::Label::textColourId, knobLabelColour);
+    masterVolumeLabel.setFont (makeKnobLabelFont());
+    masterVolumeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    masterVolumeSlider.setTextBoxStyle (
+        juce::Slider::TextBoxRight, true, 66, 20);
+    masterVolumeSlider.setRange (-60.0, 6.0, 0.1);
+    masterVolumeSlider.setSkewFactorFromMidPoint (-12.0);
+    masterVolumeSlider.setDoubleClickReturnValue (true, 0.0);
+    masterVolumeSlider.setColour (
+        juce::Slider::trackColourId, juce::Colour (0xff5fa3d1));
+    masterVolumeSlider.setColour (
+        juce::Slider::thumbColourId, juce::Colour (0xff86c8ee));
+    masterVolumeSlider.setColour (
+        juce::Slider::backgroundColourId, raisedPanelColour);
+    masterVolumeSlider.setColour (
+        juce::Slider::textBoxTextColourId, knobValueColour);
+    masterVolumeSlider.setColour (
+        juce::Slider::textBoxBackgroundColourId,
+        juce::Colours::transparentBlack);
+    masterVolumeSlider.setColour (
+        juce::Slider::textBoxOutlineColourId,
+        juce::Colours::transparentBlack);
+    masterVolumeSlider.textFromValueFunction = [] (double value)
+    {
+        return value <= -59.95 ? juce::String ("-INF")
+                               : juce::String (value, 1) + " dB";
+    };
+    masterVolumeSlider.onValueChange = [this]
+    {
+        if (! updatingMasterVolume)
+            processor.setMasterVolumeDb (
+                static_cast<float> (masterVolumeSlider.getValue()));
+    };
+    masterVolumeSlider.setValue (processor.getMasterVolumeDb(),
+                                 juce::dontSendNotification);
+    addAndMakeVisible (masterVolumeLabel);
+    addAndMakeVisible (masterVolumeSlider);
 
     browserPanel = std::make_unique<SVDrummerBrowserPanel> (
         processor,
@@ -7412,6 +7924,12 @@ void SVDrummerAudioProcessorEditor::resized()
                  - static_cast<float> (baseEditorHeight) * uiScale) * 0.5f;
 
     auto area = juce::Rectangle<int> (0, 0, baseEditorWidth, baseEditorHeight).reduced (10);
+    auto masterBounds = juce::Rectangle<int> (
+        baseEditorWidth - 320, 10, 310, 42);
+    masterVolumeLabel.setBounds (
+        masterBounds.removeFromLeft (72).withSizeKeepingCentre (72, 20));
+    masterVolumeSlider.setBounds (
+        masterBounds.withSizeKeepingCentre (masterBounds.getWidth(), 24));
     area.removeFromTop (48);
 
     const int browserWidth = juce::jlimit (245, 390,
@@ -7461,6 +7979,8 @@ void SVDrummerAudioProcessorEditor::resized()
     sequencerViewButton.setTransform (transform);
     settingsViewButton.setTransform (transform);
     fxViewButton.setTransform (transform);
+    masterVolumeLabel.setTransform (transform);
+    masterVolumeSlider.setTransform (transform);
     sequencerPanel->setTransform (transform);
     padSettingsPanel->setTransform (transform);
     globalFxPanel->setTransform (transform);
@@ -7471,8 +7991,15 @@ void SVDrummerAudioProcessorEditor::resized()
 
 void SVDrummerAudioProcessorEditor::timerCallback()
 {
+    updatingMasterVolume = true;
+    masterVolumeSlider.setValue (processor.getMasterVolumeDb(),
+                                 juce::dontSendNotification);
+    updatingMasterVolume = false;
+
     for (auto& pad : padComponents)
         pad->refreshAnimation();
+
+    browserPanel->refreshLoadedDisplay();
 
     if (activeView == 1)
         padSettingsPanel->syncFromProcessor();

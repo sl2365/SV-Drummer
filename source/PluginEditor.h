@@ -59,6 +59,9 @@ private:
     juce::TextButton sequencerViewButton { "SEQUENCER" };
     juce::TextButton settingsViewButton { "PAD SETTINGS" };
     juce::TextButton fxViewButton { "FX + Mixer" };
+    juce::Label masterVolumeLabel;
+    juce::Slider masterVolumeSlider;
+    bool updatingMasterVolume = false;
     int activeView = 0;
     bool initialLayoutComplete = false;
     bool zoomSavePending = false;

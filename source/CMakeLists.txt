@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(SVDrummer VERSION 0.10.7 LANGUAGES C CXX)
+project(SVDrummer VERSION 0.13.0 LANGUAGES C CXX)
 
 set(JUCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../_Tools/JUCE/_8.0.15")
 
@@ -12,7 +12,7 @@ endif()
 add_subdirectory("${JUCE_DIR}" "${CMAKE_BINARY_DIR}/JUCE")
 
 juce_add_plugin(SVDrummer
-    VERSION 0.10.7
+    VERSION 0.13.0
     COMPANY_NAME "sl23"
     BUNDLE_ID "com.sl23.svdrummer"
     IS_SYNTH TRUE

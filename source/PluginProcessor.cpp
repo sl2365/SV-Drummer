@@ -1281,6 +1281,31 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
                 {
                     return juce::String (value, 1) + " dB";
                 }));
+
+        padHostParameters[index].compressorGain = addStateParameter (
+            std::make_unique<StateBackedParameter> (
+                juce::ParameterID { idPrefix + "_compressor_gain_db", 1 },
+                namePrefix + "Compressor Gain",
+                juce::NormalisableRange<float> { -24.0f, 24.0f, 0.1f },
+                0.0f,
+                "dB",
+                [this, index] { return pads[index].compressorGainDb.load(); },
+                [this, index] (float value)
+                {
+                    const float next = juce::jlimit (-24.0f, 24.0f, value);
+
+                    if (std::abs (pads[index].compressorGainDb.exchange (next)
+                                  - next) > 0.0001f)
+                        markHostParameterStateChanged();
+                },
+                0,
+                false,
+                [] (float value, int)
+                {
+                    return (value > 0.0f ? juce::String ("+")
+                                          : juce::String())
+                         + juce::String (value, 1) + " dB";
+                }));
     }
 
     for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
@@ -1682,6 +1707,52 @@ void SVDrummerAudioProcessor::initialiseHostParameters()
                 },
                 0, false, percentageText));
     }
+
+    // Global ducking was added in v0.11.0. These parameters stay at the end
+    // so every existing PHI/DAW parameter index remains unchanged.
+    addGlobalFloat (
+        globalDelayDuckParameter, "global_delay_duck", "Global Delay Duck",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+        0.0f, "%", globalDelayDuck,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+    addGlobalFloat (
+        globalDelayDuckAttackParameter, "global_delay_duck_attack_ms",
+        "Global Delay Duck Attack",
+        juce::NormalisableRange<float> { 0.1f, 250.0f, 0.1f },
+        10.0f, "ms", globalDelayDuckAttackMs,
+        [] (float value, int) {
+            return juce::String (value, value < 10.0f ? 1 : 0) + " ms";
+        });
+    addGlobalFloat (
+        globalDelayDuckReleaseParameter, "global_delay_duck_release_ms",
+        "Global Delay Duck Release",
+        juce::NormalisableRange<float> { 10.0f, 2000.0f, 1.0f },
+        250.0f, "ms", globalDelayDuckReleaseMs,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value)) + " ms";
+        });
+    addGlobalFloat (
+        globalReverbDuckParameter, "global_reverb_duck",
+        "Global Reverb Duck",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
+        0.0f, "%", globalReverbDuck,
+        [] (float value, int) {
+            return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+        });
+
+    // The global master was added in v0.11.3 and remains last to preserve all
+    // established PHI/DAW parameter indices.
+    addGlobalFloat (
+        masterVolumeParameter, "master_volume_db", "Master Volume",
+        juce::NormalisableRange<float> { -60.0f, 6.0f, 0.1f },
+        0.0f, "dB", masterVolumeDb,
+        [] (float value, int) {
+            return value <= -59.95f
+                     ? juce::String ("-INF")
+                     : juce::String (value, 1) + " dB";
+        });
 }
 
 const juce::String SVDrummerAudioProcessor::getName() const
@@ -1704,6 +1775,8 @@ void SVDrummerAudioProcessor::prepareToPlay (double sampleRate,
                                               int maximumBlockSize)
 {
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
+    currentMasterGain = juce::Decibels::decibelsToGain (
+        masterVolumeDb.load(), -60.0f);
     preparePadFilterDsp (maximumBlockSize);
     prepareGlobalEffects();
     lastPatternTimelineResetCounter = patternTimelineResetCounter.load();
@@ -2060,6 +2133,28 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         triggerBrowserPreviewOnAudioThread();
 
     renderBrowserPreview (mainOutput);
+
+    const float targetMasterGain = juce::Decibels::decibelsToGain (
+        masterVolumeDb.load(), -60.0f);
+    const bool rampMaster = std::abs (targetMasterGain - currentMasterGain)
+                            > 0.000001f;
+
+    for (int busIndex = 0; busIndex < numberOfOutputBuses; ++busIndex)
+    {
+        auto output = getBusBuffer (buffer, false, busIndex);
+
+        for (int channel = 0; channel < output.getNumChannels(); ++channel)
+        {
+            if (rampMaster)
+                output.applyGainRamp (channel, 0, output.getNumSamples(),
+                                      currentMasterGain, targetMasterGain);
+            else
+                output.applyGain (channel, 0, output.getNumSamples(),
+                                  targetMasterGain);
+        }
+    }
+
+    currentMasterGain = targetMasterGain;
 }
 
 void SVDrummerAudioProcessor::triggerBrowserPreviewOnAudioThread()
@@ -2841,6 +2936,7 @@ void SVDrummerAudioProcessor::resetPadCompressorDspState (int padIndex)
 
     auto& state = padCompressorDspStates[static_cast<std::size_t> (padIndex)];
     state.gain = 1.0f;
+    state.outputGain = 1.0f;
     state.wetMix = 0.0f;
     state.wasEnabled = false;
 }
@@ -2865,7 +2961,9 @@ void SVDrummerAudioProcessor::processPadCompressor (
         return;
     }
 
-    if (! state.wasEnabled)
+    const bool starting = ! state.wasEnabled;
+
+    if (starting)
     {
         state.gain = 1.0f;
         state.wasEnabled = true;
@@ -2881,6 +2979,8 @@ void SVDrummerAudioProcessor::processPadCompressor (
         10.0f, 1000.0f, pad.compressorReleaseMs.load());
     const float kneeDb = juce::jlimit (
         0.0f, 24.0f, pad.compressorKneeDb.load());
+    const float targetOutputGain = juce::Decibels::decibelsToGain (
+        juce::jlimit (-24.0f, 24.0f, pad.compressorGainDb.load()));
     const double safeSampleRate = juce::jmax (1.0, currentSampleRate);
     const float attackCoefficient = static_cast<float> (std::exp (
         -1.0 / (0.001 * static_cast<double> (attackMs) * safeSampleRate)));
@@ -2889,6 +2989,11 @@ void SVDrummerAudioProcessor::processPadCompressor (
     const float compressionSlope = 1.0f - 1.0f / ratio;
     const float bypassRampStep = 1.0f / static_cast<float> (
         juce::jmax (1.0, safeSampleRate * 0.005));
+    const float outputGainCoefficient = static_cast<float> (std::exp (
+        -1.0 / (0.010 * safeSampleRate)));
+
+    if (starting)
+        state.outputGain = targetOutputGain;
 
     for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
     {
@@ -2937,11 +3042,14 @@ void SVDrummerAudioProcessor::processPadCompressor (
                                     ? attackCoefficient
                                     : releaseCoefficient;
         state.gain = targetGain + coefficient * (state.gain - targetGain);
+        state.outputGain = targetOutputGain
+                         + outputGainCoefficient
+                             * (state.outputGain - targetOutputGain);
 
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
         {
             const float dryValue = buffer.getSample (channel, sample);
-            const float wetValue = dryValue * state.gain;
+            const float wetValue = dryValue * state.gain * state.outputGain;
             buffer.setSample (channel, sample,
                               dryValue + (wetValue - dryValue) * wetMix);
         }
@@ -3060,14 +3168,20 @@ void SVDrummerAudioProcessor::prepareGlobalEffects()
     globalDelayCurrentSamples = 0.0f;
     globalDelayFeedbackLowPass.fill (0.0f);
     globalDelayBypassMix = 0.0f;
+    globalDelayDuckEnvelope = 0.0f;
     globalDelayWasEnabled = false;
     delaySendBuffer.setSize (
         2, juce::jmax (1, padRenderBuffer.getNumSamples()), false, true);
     reverbSendBuffer.setSize (
         2, juce::jmax (1, padRenderBuffer.getNumSamples()), false, true);
+    globalReverbDuckGain.assign (
+        static_cast<std::size_t> (
+            juce::jmax (1, padRenderBuffer.getNumSamples())),
+        1.0f);
     globalReverb.setSampleRate (juce::jmax (1.0, currentSampleRate));
     globalReverb.reset();
     globalReverbBypassMix = 0.0f;
+    globalReverbDuckEnvelope = 0.0f;
     globalReverbWasEnabled = false;
 }
 
@@ -3084,6 +3198,7 @@ void SVDrummerAudioProcessor::processGlobalDelay (
         globalDelayWritePosition = 0;
         globalDelayCurrentSamples = 0.0f;
         globalDelayFeedbackLowPass.fill (0.0f);
+        globalDelayDuckEnvelope = 0.0f;
     };
 
     if (! enabled && globalDelayBypassMix <= 0.0f)
@@ -3139,13 +3254,51 @@ void SVDrummerAudioProcessor::processGlobalDelay (
                   * feedbackCutoff / sampleRate));
     const float bypassRampStep = 1.0f / static_cast<float> (
         juce::jmax (1.0, sampleRate * 0.005));
+    const float duckAmount = juce::jlimit (
+        0.0f, 1.0f, globalDelayDuck.load());
+    const float duckAttackSeconds = juce::jmax (
+        0.0001f, globalDelayDuckAttackMs.load() * 0.001f);
+    const float duckReleaseSeconds = juce::jmax (
+        0.001f, globalDelayDuckReleaseMs.load() * 0.001f);
+    const float duckAttackCoefficient = static_cast<float> (
+        1.0 - std::exp (-1.0 / (duckAttackSeconds * sampleRate)));
+    const float duckReleaseCoefficient = static_cast<float> (
+        1.0 - std::exp (-1.0 / (duckReleaseSeconds * sampleRate)));
 
     for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
     {
+        float duckGain = 1.0f;
+
+        if (duckAmount > 0.0f)
+        {
+            float detector = 0.0f;
+
+            for (int channel = 0; channel < channelCount; ++channel)
+                detector = juce::jmax (
+                    detector, std::abs (buffer.getSample (channel, sample)));
+
+            detector = std::sqrt (juce::jlimit (
+                0.0f, 1.0f, detector * 8.0f));
+            const float coefficient = detector > globalDelayDuckEnvelope
+                                        ? duckAttackCoefficient
+                                        : duckReleaseCoefficient;
+            globalDelayDuckEnvelope += coefficient
+                * (detector - globalDelayDuckEnvelope);
+            constexpr float maximumDuckNaturalLog = 5.526204f; // 48 dB
+            duckGain = std::exp (
+                -maximumDuckNaturalLog * duckAmount
+                * juce::jlimit (0.0f, 1.0f,
+                                globalDelayDuckEnvelope));
+        }
+        else
+        {
+            globalDelayDuckEnvelope = 0.0f;
+        }
+
         globalDelayBypassMix += juce::jlimit (
             -bypassRampStep, bypassRampStep,
             targetBypassMix - globalDelayBypassMix);
-        const float returnLevel = mix * globalDelayBypassMix;
+        const float returnLevel = mix * globalDelayBypassMix * duckGain;
         globalDelayCurrentSamples += delaySmoothing
             * (targetDelaySamples - globalDelayCurrentSamples);
         float readPosition = static_cast<float> (globalDelayWritePosition)
@@ -3196,6 +3349,7 @@ void SVDrummerAudioProcessor::processGlobalReverb (
             globalReverb.reset();
 
         globalReverbWasEnabled = false;
+        globalReverbDuckEnvelope = 0.0f;
         buffer.clear();
         return;
     }
@@ -3203,7 +3357,59 @@ void SVDrummerAudioProcessor::processGlobalReverb (
     if (enabled && ! globalReverbWasEnabled)
     {
         globalReverb.reset();
+        globalReverbDuckEnvelope = 0.0f;
         globalReverbWasEnabled = true;
+    }
+
+    const int numSamples = buffer.getNumSamples();
+    const int channelCount = juce::jmin (2, buffer.getNumChannels());
+
+    if (globalReverbDuckGain.size()
+        < static_cast<std::size_t> (numSamples))
+        globalReverbDuckGain.resize (
+            static_cast<std::size_t> (numSamples), 1.0f);
+
+    const float duckAmount = juce::jlimit (
+        0.0f, 1.0f, globalReverbDuck.load());
+    const double sampleRate = juce::jmax (1.0, currentSampleRate);
+    constexpr float duckAttackSeconds = 0.010f;
+    constexpr float duckReleaseSeconds = 0.250f;
+    const float duckAttackCoefficient = static_cast<float> (
+        1.0 - std::exp (-1.0 / (duckAttackSeconds * sampleRate)));
+    const float duckReleaseCoefficient = static_cast<float> (
+        1.0 - std::exp (-1.0 / (duckReleaseSeconds * sampleRate)));
+
+    for (int sample = 0; sample < numSamples; ++sample)
+    {
+        float duckGain = 1.0f;
+
+        if (duckAmount > 0.0f)
+        {
+            float detector = 0.0f;
+
+            for (int channel = 0; channel < channelCount; ++channel)
+                detector = juce::jmax (
+                    detector, std::abs (buffer.getSample (channel, sample)));
+
+            detector = std::sqrt (juce::jlimit (
+                0.0f, 1.0f, detector * 8.0f));
+            const float coefficient = detector > globalReverbDuckEnvelope
+                                        ? duckAttackCoefficient
+                                        : duckReleaseCoefficient;
+            globalReverbDuckEnvelope += coefficient
+                * (detector - globalReverbDuckEnvelope);
+            constexpr float maximumDuckNaturalLog = 5.526204f; // 48 dB
+            duckGain = std::exp (
+                -maximumDuckNaturalLog * duckAmount
+                * juce::jlimit (0.0f, 1.0f,
+                                globalReverbDuckEnvelope));
+        }
+        else
+        {
+            globalReverbDuckEnvelope = 0.0f;
+        }
+
+        globalReverbDuckGain[static_cast<std::size_t> (sample)] = duckGain;
     }
 
     juce::Reverb::Parameters parameters;
@@ -3218,10 +3424,10 @@ void SVDrummerAudioProcessor::processGlobalReverb (
     if (buffer.getNumChannels() >= 2)
         globalReverb.processStereo (buffer.getWritePointer (0),
                                     buffer.getWritePointer (1),
-                                    buffer.getNumSamples());
+                                    numSamples);
     else
         globalReverb.processMono (buffer.getWritePointer (0),
-                                  buffer.getNumSamples());
+                                  numSamples);
 
     const float bypassRampStep = 1.0f / static_cast<float> (
         juce::jmax (1.0, currentSampleRate * 0.005));
@@ -3238,13 +3444,16 @@ void SVDrummerAudioProcessor::processGlobalReverb (
         {
             const float wet = buffer.getSample (channel, sample);
             buffer.setSample (channel, sample,
-                              wet * returnLevel * globalReverbBypassMix);
+                              wet * returnLevel * globalReverbBypassMix
+                                  * globalReverbDuckGain[
+                                      static_cast<std::size_t> (sample)]);
         }
     }
 
     if (! enabled && globalReverbBypassMix <= 0.0f)
     {
         globalReverb.reset();
+        globalReverbDuckEnvelope = 0.0f;
         globalReverbWasEnabled = false;
     }
 }
@@ -3488,6 +3697,7 @@ SVDrummerAudioProcessor::capturePadState (int padIndex) const
     state.compressorAttackMs = pad.compressorAttackMs.load();
     state.compressorReleaseMs = pad.compressorReleaseMs.load();
     state.compressorKneeDb = pad.compressorKneeDb.load();
+    state.compressorGainDb = pad.compressorGainDb.load();
     state.saturationAmount = pad.saturationAmount.load();
     state.saturationHardClipAmount = pad.saturationHardClipAmount.load();
     state.saturationEnabled = pad.saturationEnabled.load();
@@ -3554,6 +3764,7 @@ void SVDrummerAudioProcessor::applyPadState (
     setPadCompressorAttackMs (padIndex, state.compressorAttackMs);
     setPadCompressorReleaseMs (padIndex, state.compressorReleaseMs);
     setPadCompressorKneeDb (padIndex, state.compressorKneeDb);
+    setPadCompressorGainDb (padIndex, state.compressorGainDb);
     setPadSaturationAmount (padIndex, state.saturationAmount);
     setPadSaturationHardClipAmount (
         padIndex, state.saturationHardClipAmount);
@@ -4313,6 +4524,31 @@ void SVDrummerAudioProcessor::setPadCompressorKneeDb (int padIndex,
     markPortableSettingsDirty();
 }
 
+float SVDrummerAudioProcessor::getPadCompressorGainDb (int padIndex) const
+{
+    return isValidPadIndex (padIndex)
+         ? pads[static_cast<std::size_t> (padIndex)].compressorGainDb.load()
+         : 0.0f;
+}
+
+void SVDrummerAudioProcessor::setPadCompressorGainDb (int padIndex,
+                                                       float decibels)
+{
+    if (! isValidPadIndex (padIndex))
+        return;
+
+    const float value = juce::jlimit (-24.0f, 24.0f, decibels);
+
+    if (setHostParameterValue (
+            padHostParameters[static_cast<std::size_t> (padIndex)]
+                .compressorGain,
+            value))
+        return;
+
+    pads[static_cast<std::size_t> (padIndex)].compressorGainDb.store (value);
+    markPortableSettingsDirty();
+}
+
 float SVDrummerAudioProcessor::getPadSaturationAmount (int padIndex) const
 {
     return isValidPadIndex (padIndex)
@@ -4479,6 +4715,53 @@ void SVDrummerAudioProcessor::setGlobalDelayMix (float amount)
     markPortableSettingsDirty();
 }
 
+float SVDrummerAudioProcessor::getGlobalDelayDuck() const noexcept
+{
+    return globalDelayDuck.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelayDuck (float amount)
+{
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (! setHostParameterValue (globalDelayDuckParameter, value))
+        globalDelayDuck.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalDelayDuckAttackMs() const noexcept
+{
+    return globalDelayDuckAttackMs.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelayDuckAttackMs (
+    float milliseconds)
+{
+    const float value = juce::jlimit (0.1f, 250.0f, milliseconds);
+
+    if (! setHostParameterValue (globalDelayDuckAttackParameter, value))
+        globalDelayDuckAttackMs.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalDelayDuckReleaseMs() const noexcept
+{
+    return globalDelayDuckReleaseMs.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalDelayDuckReleaseMs (
+    float milliseconds)
+{
+    const float value = juce::jlimit (10.0f, 2000.0f, milliseconds);
+
+    if (! setHostParameterValue (globalDelayDuckReleaseParameter, value))
+        globalDelayDuckReleaseMs.store (value);
+
+    markPortableSettingsDirty();
+}
+
 bool SVDrummerAudioProcessor::isGlobalReverbEnabled() const noexcept
 {
     return globalReverbEnabled.load();
@@ -4549,6 +4832,36 @@ void SVDrummerAudioProcessor::setGlobalReverbMix (float amount)
 
     if (! setHostParameterValue (globalReverbMixParameter, value))
         globalReverbMix.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getGlobalReverbDuck() const noexcept
+{
+    return globalReverbDuck.load();
+}
+
+void SVDrummerAudioProcessor::setGlobalReverbDuck (float amount)
+{
+    const float value = juce::jlimit (0.0f, 1.0f, amount);
+
+    if (! setHostParameterValue (globalReverbDuckParameter, value))
+        globalReverbDuck.store (value);
+
+    markPortableSettingsDirty();
+}
+
+float SVDrummerAudioProcessor::getMasterVolumeDb() const noexcept
+{
+    return masterVolumeDb.load();
+}
+
+void SVDrummerAudioProcessor::setMasterVolumeDb (float decibels)
+{
+    const float value = juce::jlimit (-60.0f, 6.0f, decibels);
+
+    if (! setHostParameterValue (masterVolumeParameter, value))
+        masterVolumeDb.store (value);
 
     markPortableSettingsDirty();
 }
@@ -5339,6 +5652,29 @@ void SVDrummerAudioProcessor::clearSequenceLane (int laneIndex)
     applySequenceLaneState (laneIndex, cleared);
 }
 
+void SVDrummerAudioProcessor::nudgeSequenceLane (int laneIndex, int direction)
+{
+    if (! isValidPadIndex (laneIndex) || direction == 0)
+        return;
+
+    captureSequenceLaneUndoState (laneIndex);
+    const auto original = captureSequenceLaneState (laneIndex);
+    auto shifted = original;
+    const int steps = juce::jlimit (
+        1, maximumStepsPerLane, original.loopLength);
+    const int movement = direction < 0 ? -1 : 1;
+
+    for (int sourceStep = 0; sourceStep < steps; ++sourceStep)
+    {
+        const int destinationStep =
+            (sourceStep + movement + steps) % steps;
+        shifted.stepVelocities[static_cast<std::size_t> (destinationStep)] =
+            original.stepVelocities[static_cast<std::size_t> (sourceStep)];
+    }
+
+    applySequenceLaneState (laneIndex, shifted);
+}
+
 bool SVDrummerAudioProcessor::canUndoSequenceLaneOperation (
     int laneIndex) const noexcept
 {
@@ -5565,6 +5901,17 @@ juce::String SVDrummerAudioProcessor::getPatternName (int patternIndex) const
     return storedPatterns[static_cast<std::size_t> (patternIndex)].name;
 }
 
+juce::File SVDrummerAudioProcessor::getPatternFile (int patternIndex) const
+{
+    if (! isValidPatternIndex (patternIndex))
+        return {};
+
+    const juce::ScopedLock lock (stateLock);
+    const auto& filePath =
+        storedPatterns[static_cast<std::size_t> (patternIndex)].filePath;
+    return filePath.isNotEmpty() ? juce::File (filePath) : juce::File();
+}
+
 juce::String SVDrummerAudioProcessor::getCurrentKitName() const
 {
     const juce::ScopedLock lock (stateLock);
@@ -5585,10 +5932,26 @@ juce::String SVDrummerAudioProcessor::getCurrentPatternSetName() const
     return currentPatternSetName;
 }
 
+juce::File SVDrummerAudioProcessor::getCurrentPatternSetFile() const
+{
+    const juce::ScopedLock lock (stateLock);
+    return currentPatternSetFilePath.isNotEmpty()
+             ? juce::File (currentPatternSetFilePath)
+             : juce::File();
+}
+
 juce::String SVDrummerAudioProcessor::getCurrentProjectName() const
 {
     const juce::ScopedLock lock (stateLock);
     return currentProjectName;
+}
+
+juce::File SVDrummerAudioProcessor::getCurrentProjectFile() const
+{
+    const juce::ScopedLock lock (stateLock);
+    return currentProjectFilePath.isNotEmpty()
+             ? juce::File (currentProjectFilePath)
+             : juce::File();
 }
 
 int SVDrummerAudioProcessor::getPatternMidiNote (int patternIndex) const
@@ -6394,6 +6757,12 @@ SVDrummerAudioProcessor::createGlobalFxXml() const
                        static_cast<double> (getGlobalDelayFeedback()));
     xml->setAttribute ("delayMix",
                        static_cast<double> (getGlobalDelayMix()));
+    xml->setAttribute ("delayDuck",
+                       static_cast<double> (getGlobalDelayDuck()));
+    xml->setAttribute ("delayDuckAttackMs",
+                       static_cast<double> (getGlobalDelayDuckAttackMs()));
+    xml->setAttribute ("delayDuckReleaseMs",
+                       static_cast<double> (getGlobalDelayDuckReleaseMs()));
     xml->setAttribute ("reverbEnabled", isGlobalReverbEnabled());
     xml->setAttribute ("reverbSize",
                        static_cast<double> (getGlobalReverbSize()));
@@ -6403,6 +6772,10 @@ SVDrummerAudioProcessor::createGlobalFxXml() const
                        static_cast<double> (getGlobalReverbWidth()));
     xml->setAttribute ("reverbMix",
                        static_cast<double> (getGlobalReverbMix()));
+    xml->setAttribute ("reverbDuck",
+                       static_cast<double> (getGlobalReverbDuck()));
+    xml->setAttribute ("masterVolumeDb",
+                       static_cast<double> (getMasterVolumeDb()));
     return xml;
 }
 
@@ -6417,11 +6790,16 @@ void SVDrummerAudioProcessor::loadGlobalFxXml (
         setGlobalDelayTimeMs (250.0f);
         setGlobalDelayFeedback (0.35f);
         setGlobalDelayMix (0.25f);
+        setGlobalDelayDuck (0.0f);
+        setGlobalDelayDuckAttackMs (10.0f);
+        setGlobalDelayDuckReleaseMs (250.0f);
         setGlobalReverbEnabled (false);
         setGlobalReverbSize (0.50f);
         setGlobalReverbDamping (0.50f);
         setGlobalReverbWidth (1.0f);
         setGlobalReverbMix (0.20f);
+        setGlobalReverbDuck (0.0f);
+        setMasterVolumeDb (0.0f);
         return;
     }
 
@@ -6437,6 +6815,12 @@ void SVDrummerAudioProcessor::loadGlobalFxXml (
         globalFxXml->getDoubleAttribute ("delayFeedback", 0.35)));
     setGlobalDelayMix (static_cast<float> (
         globalFxXml->getDoubleAttribute ("delayMix", 0.25)));
+    setGlobalDelayDuck (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("delayDuck", 0.0)));
+    setGlobalDelayDuckAttackMs (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("delayDuckAttackMs", 10.0)));
+    setGlobalDelayDuckReleaseMs (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("delayDuckReleaseMs", 250.0)));
     setGlobalReverbEnabled (
         globalFxXml->getBoolAttribute ("reverbEnabled", false));
     setGlobalReverbSize (static_cast<float> (
@@ -6447,6 +6831,10 @@ void SVDrummerAudioProcessor::loadGlobalFxXml (
         globalFxXml->getDoubleAttribute ("reverbWidth", 1.0)));
     setGlobalReverbMix (static_cast<float> (
         globalFxXml->getDoubleAttribute ("reverbMix", 0.20)));
+    setGlobalReverbDuck (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("reverbDuck", 0.0)));
+    setMasterVolumeDb (static_cast<float> (
+        globalFxXml->getDoubleAttribute ("masterVolumeDb", 0.0)));
 }
 
 std::unique_ptr<juce::XmlElement> SVDrummerAudioProcessor::createKitXml() const
@@ -6504,6 +6892,8 @@ std::unique_ptr<juce::XmlElement> SVDrummerAudioProcessor::createKitXml() const
             pad.compressorReleaseMs.load()));
         padXml->setAttribute ("compressorKneeDb", static_cast<double> (
             pad.compressorKneeDb.load()));
+        padXml->setAttribute ("compressorGainDb", static_cast<double> (
+            pad.compressorGainDb.load()));
         padXml->setAttribute ("saturationAmount", static_cast<double> (
             pad.saturationAmount.load()));
         padXml->setAttribute ("saturationHardClip", static_cast<double> (
@@ -6631,6 +7021,10 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
             0.0f, 24.0f,
             static_cast<float> (item->getDoubleAttribute (
                 "compressorKneeDb", 6.0)));
+        pad.compressorGainDb = juce::jlimit (
+            -24.0f, 24.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorGainDb", 0.0)));
         pad.saturationAmount = juce::jlimit (
             0.0f, 1.0f,
             static_cast<float> (item->getDoubleAttribute (
@@ -6753,6 +7147,7 @@ juce::Result SVDrummerAudioProcessor::loadKitXml (
         targetPad.compressorAttackMs.store (sourcePad.compressorAttackMs);
         targetPad.compressorReleaseMs.store (sourcePad.compressorReleaseMs);
         targetPad.compressorKneeDb.store (sourcePad.compressorKneeDb);
+        targetPad.compressorGainDb.store (sourcePad.compressorGainDb);
         targetPad.saturationAmount.store (sourcePad.saturationAmount);
         targetPad.saturationHardClipAmount.store (
             sourcePad.saturationHardClipAmount);
@@ -6789,6 +7184,7 @@ juce::Result SVDrummerAudioProcessor::saveKitToFile (
         currentKitFilePath = file.getFullPathName();
     }
 
+    markPortableSettingsDirty();
     return juce::Result::ok();
 }
 
@@ -7074,6 +7470,7 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetXml (
     {
         const juce::ScopedLock lock (stateLock);
         currentPatternSetName = loadedPatternSetName;
+        currentPatternSetFilePath.clear();
     }
 
     return juce::Result::ok();
@@ -7098,9 +7495,12 @@ juce::Result SVDrummerAudioProcessor::saveStoredPatternToFile (
 
     {
         const juce::ScopedLock lock (stateLock);
-        storedPatterns[static_cast<std::size_t> (patternIndex)].name = savedName;
+        auto& stored = storedPatterns[static_cast<std::size_t> (patternIndex)];
+        stored.name = savedName;
+        stored.filePath = file.getFullPathName();
     }
 
+    markPortableSettingsDirty();
     return juce::Result::ok();
 }
 
@@ -7125,6 +7525,7 @@ juce::Result SVDrummerAudioProcessor::loadPatternIntoSlot (
         return result;
 
     loaded.name = file.getFileNameWithoutExtension();
+    loaded.filePath = file.getFullPathName();
 
     captureCurrentPattern();
     capturePatternUndoState (patternIndex);
@@ -7179,6 +7580,7 @@ void SVDrummerAudioProcessor::pastePatternSlot (int patternIndex)
     pasted.assigned = true;
     pasted.name = "Pattern "
                 + juce::String (patternIndex + 1).paddedLeft ('0', 2);
+    pasted.filePath.clear();
     storedPatterns[static_cast<std::size_t> (patternIndex)] = std::move (pasted);
 
     if (patternIndex == currentPatternIndex.load())
@@ -7321,8 +7723,10 @@ juce::Result SVDrummerAudioProcessor::savePatternSetToFile (
     {
         const juce::ScopedLock lock (stateLock);
         currentPatternSetName = savedName;
+        currentPatternSetFilePath = file.getFullPathName();
     }
 
+    markPortableSettingsDirty();
     return juce::Result::ok();
 }
 
@@ -7344,6 +7748,7 @@ juce::Result SVDrummerAudioProcessor::loadPatternSetFromFile (
         {
             const juce::ScopedLock lock (stateLock);
             currentPatternSetName = file.getFileNameWithoutExtension();
+            currentPatternSetFilePath = file.getFullPathName();
         }
 
         // Loading a library Pattern Set must always leave transport stopped.
@@ -7390,8 +7795,10 @@ juce::Result SVDrummerAudioProcessor::saveProjectToFile (
     {
         const juce::ScopedLock lock (stateLock);
         currentProjectName = savedName;
+        currentProjectFilePath = file.getFullPathName();
     }
 
+    markPortableSettingsDirty();
     return juce::Result::ok();
 }
 
@@ -7449,6 +7856,7 @@ juce::Result SVDrummerAudioProcessor::loadProjectFromFile (
     {
         const juce::ScopedLock lock (stateLock);
         currentProjectName = file.getFileNameWithoutExtension();
+        currentProjectFilePath = file.getFullPathName();
     }
 
     markPortableSettingsDirty();
@@ -7850,7 +8258,7 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "10.7.0");
+    state.setAttribute ("version", "13.0.0");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     {
@@ -7861,7 +8269,17 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
                            ? makeStoredPath (juce::File (currentKitFilePath))
                            : juce::String());
         state.setAttribute ("patternSetName", currentPatternSetName);
+        state.setAttribute (
+            "patternSetFile", currentPatternSetFilePath.isNotEmpty()
+                                  ? makeStoredPath (
+                                        juce::File (currentPatternSetFilePath))
+                                  : juce::String());
         state.setAttribute ("projectName", currentProjectName);
+        state.setAttribute (
+            "projectFile", currentProjectFilePath.isNotEmpty()
+                               ? makeStoredPath (
+                                     juce::File (currentProjectFilePath))
+                               : juce::String());
     }
 
     auto* sequencer = state.createNewChildElement ("SEQUENCER");
@@ -7931,6 +8349,8 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             getPadCompressorReleaseMs (padIndex)));
         item->setAttribute ("compressorKneeDb", static_cast<double> (
             getPadCompressorKneeDb (padIndex)));
+        item->setAttribute ("compressorGainDb", static_cast<double> (
+            getPadCompressorGainDb (padIndex)));
         item->setAttribute ("saturationAmount", static_cast<double> (
             getPadSaturationAmount (padIndex)));
         item->setAttribute ("saturationHardClip", static_cast<double> (
@@ -7969,6 +8389,11 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         slotXml->setAttribute ("index", patternIndex);
         slotXml->setAttribute ("assigned", isPatternAssigned (patternIndex));
         slotXml->setAttribute ("midiNote", getPatternMidiNote (patternIndex));
+        const auto patternFile = getPatternFile (patternIndex);
+        slotXml->setAttribute (
+            "file", patternFile != juce::File()
+                        ? makeStoredPath (patternFile)
+                        : juce::String());
 
         if (isPatternAssigned (patternIndex))
             if (auto patternXml = createPatternXml (patternIndex))
@@ -8007,8 +8432,20 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
                                : juce::String();
         currentPatternSetName = state->getStringAttribute (
             "patternSetName", "New Pattern Set");
+        const auto storedPatternSetFile = state->getStringAttribute (
+            "patternSetFile");
+        currentPatternSetFilePath = storedPatternSetFile.isNotEmpty()
+                                      ? resolveStoredPath (
+                                            storedPatternSetFile).getFullPathName()
+                                      : juce::String();
         currentProjectName = state->getStringAttribute (
             "projectName", "New Project");
+        const auto storedProjectFile = state->getStringAttribute (
+            "projectFile");
+        currentProjectFilePath = storedProjectFile.isNotEmpty()
+                                   ? resolveStoredPath (
+                                         storedProjectFile).getFullPathName()
+                                   : juce::String();
     }
 
     if (auto* sequencer = state->getChildByName ("SEQUENCER"))
@@ -8137,6 +8574,10 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
             0.0f, 24.0f,
             static_cast<float> (item->getDoubleAttribute (
                 "compressorKneeDb", 6.0))));
+        pad.compressorGainDb.store (juce::jlimit (
+            -24.0f, 24.0f,
+            static_cast<float> (item->getDoubleAttribute (
+                "compressorGainDb", 0.0))));
         pad.saturationAmount.store (juce::jlimit (
             0.0f, 1.0f,
             static_cast<float> (item->getDoubleAttribute (
@@ -8282,6 +8723,14 @@ void SVDrummerAudioProcessor::setStateInformation (const void* data, int sizeInB
                         "SVDRUMMER_PATTERN"))
                     loadPatternXmlIntoSlot (patternIndex, *patternXml);
             }
+
+            const auto storedPatternFile =
+                slotXml->getStringAttribute ("file");
+
+            if (storedPatternFile.isNotEmpty())
+                storedPatterns[static_cast<std::size_t> (patternIndex)].filePath
+                    = resolveStoredPath (
+                          storedPatternFile).getFullPathName();
         }
 
         int restoredPattern = juce::jlimit (

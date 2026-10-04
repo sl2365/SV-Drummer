@@ -1,4 +1,4 @@
-# SV-Drummer v0.10.7
+# SV-Drummer v0.13.0
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -38,6 +38,110 @@ Compressor knobs use green.
 Version 0.10.7 brightens the CURVE knob's aqua indicator while retaining a
 moderate tone that remains balanced with the other Pad Settings colours.
 
+Version 0.11.0 adds independent wet-return ducking to Delay and Reverb. Delay
+also provides adjustable Duck Attack and Duck Release envelope times, while
+Reverb uses a smooth fixed duck envelope. Every rotary label and value now
+uses the same explicit font face as the Sequencer PAD VOL, PAN and TUNE knobs,
+and the shared knob-value font is enlarged from 11.5 to 12.5 pixels.
+
+Version 0.11.1 explicitly reapplies that shared bold value font whenever a
+rotary control adopts or changes its look-and-feel. Delay's six knobs and
+Reverb's five knobs now remain on single rows, the compact SYNC label and amber
+LED sit immediately beside TIME, and the Mixer is restored to its exact
+pre-ducking height and fader dimensions. LED off is FREE timing; LED on is host
+SYNC.
+
+Version 0.11.2 places the SYNC label above its LED on the same baseline as the
+knob labels. Delay and Reverb now use the same compact title-to-control spacing
+as the Pad Settings AMP, FILTER, COMPRESSOR and SATURATION sections. Their
+panels are correspondingly shorter, giving the recovered height to both Mixer
+rows and their faders while preserving every other channel control.
+
+Version 0.11.3 vertically centres the SYNC LED with the Delay knob bodies and
+moves both MIX knobs to the far right of their effect rows. Rotary values now
+use the exact original Sequencer value-font construction in bold. Ducking uses
+a more sensitive detector and an exponential response offering up to 48 dB of
+wet-return reduction, making its action clearly audible. A new saved and
+automatable VOLUME control in the top-right header applies click-free gain to
+MAIN and all sixteen AUX outputs.
+
+Version 0.11.4 explicitly renders the LENGTH, VIEW, DIV and LOOP value readouts
+with the same bold value font used by PAD VOL, PAN and TUNE, bypassing JUCE's
+slider text-box font handling while preserving the existing knob layout. The
+CURVE indicator is also brighter and shifted toward a cleaner aqua hue. Filter
+CUT, Filter HPF, Compressor THRESH and RELEASE now retain their intended font
+width at every value. The wider shared readout sizing applies to every Pad
+Settings, Delay and Reverb knob so longer formatted values are not horizontally
+compressed elsewhere either. Those shared knob readouts, including CHOKE, are
+now explicitly painted with the common bold value font rather than depending
+on the embedded JUCE label to preserve its font weight. Delay TIME, Delay Duck
+RELEASE and Compressor RELEASE switch to compact seconds above 999 ms, keeping
+their full values readable within the existing knob cells.
+
+Version 0.11.5 moves CHOKE onto the same explicit bold value renderer as every
+other Pad Settings knob and brightens CURVE to a clearer aqua. Sequencer lane
+headers are slightly wider and now show both their timing division and compact
+loop length in bars. New left/right NUDGE buttons shift only the currently
+selected lane by one step with wraparound and integrate with lane Undo. The
+per-pad Compressor gains a saved, automatable -24 to +24 dB output GAIN with
+click-free smoothing. Mixer channels whose pads contain no sample are dimmed
+without disabling their controls or reacting to Mute/Solo state.
+
+Version 0.11.6 brightens the CURVE accent to a stronger aqua and increases the
+Sequencer transport diameter by exactly five pixels. Its stopped appearance is
+unchanged, while the playing state is now dark green. Every Mixer fader retains
+its existing colour, length, handle and alignment while using the same four-pixel
+coloured stalk thickness as PAN. Delay knob indicators are now olive and Reverb
+knob indicators are lilac.
+
+Version 0.11.7 makes the DIV, LOOP and NUDGE labels follow the selected pad
+colour without recolouring their Sequencer knobs or buttons. Scrolling down on
+the LANE indicator now advances to the next lane, while scrolling up returns to
+the previous lane. All Mixer faders are rendered through the same explicit
+four-pixel track path as PAN while retaining their existing colours, lengths,
+alignment and handle styles.
+
+Version 0.11.8 changes the active Sequencer Play button from green to the exact
+blue used by the LENGTH and VIEW knobs. The Delay and Reverb titles, enable LEDs
+and control rows move down by two pixels, while only the Delay SYNC label and LED
+move six pixels right toward TIME; the Delay knob positions remain unchanged.
+
+Version 0.11.9 changes the active Sequencer Play button to the more subdued
+scrollbar blue while retaining its existing stopped appearance and hover states.
+
+Version 0.11.10 gives the AMP envelope, PAN, TUNE and CHOKE knobs a restrained
+blue-violet accent derived from Pad 9 but shifted slightly further toward blue.
+The CURVE knob retains its existing bright aqua accent.
+
+Version 0.12.0 adds a live loaded-item strip above the Browser tree. The Kits
+and Projects tabs show the current Kit or Project, while the Patterns tab shows
+both the selected Pattern slot and its current Pattern Set. The display follows
+loads, saves, Pattern selection changes and host-restored state automatically.
+
+Version 0.12.1 replaces the per-tab loaded-item strip with a permanent,
+separately framed CURRENTLY LOADED panel below the Browser. It shows the Kit,
+selected Pattern, Pattern Set and Project together on every Browser tab. Its
+labels use ASCII colons instead of the unsupported bullet character, preventing
+the garbled text seen in some Windows hosts.
+
+Version 0.12.2 increases the CURRENTLY LOADED heading to 12 px and its four
+information rows from 10.5 px to 12 px without changing the panel layout.
+
+Version 0.12.3 gives the CURRENTLY LOADED heading the exact 14 px plain font
+style and colour used by the SAMPLE LIBRARIES, KIT LIBRARY, PATTERN LIBRARY and
+PROJECT LIBRARY headings. The four information rows remain 12 px bold.
+
+Version 0.12.4 renames the Browser information panel heading from CURRENTLY
+LOADED to PROJECT INFO while retaining its matched Browser-title styling.
+
+Version 0.13.0 gives Kits, individual Patterns, Pattern Sets and Projects the
+standard Save/Save As workflow. Save now writes straight back to the exact
+associated file, opening the file chooser only for a new item that has never
+been saved. Save As always opens the chooser in the relevant SV-Drummer library
+folder with the current filename prefilled so it can be renamed or copied
+elsewhere. Pattern, Pattern Set and Project file associations are now retained
+in plug-in host state, just as Kit associations already were.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -56,7 +160,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `0.10.7`
+- Version: `0.13.0`
 
 ## Current features
 
@@ -83,7 +187,11 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Switchable soft-saturation and hard-clipping intensity controls on every pad.
 - Sixteen-channel per-pad mixer with Volume, Pan, Output, Mute, Solo, Delay Send
   and Reverb Send; the two effect sends are stored with Kits and host state.
-- Global Delay and Reverb returns on MAIN, stored with Projects and host state.
+- Global Delay and Reverb returns on MAIN, with independent wet-return ducking;
+  Delay also has adjustable duck Attack and Release. All settings are stored
+  with Projects and host state.
+- Global -60 to +6 dB master Volume in the top-right header, applied to MAIN
+  and every AUX output with click-free gain smoothing.
 - Sixteen per-pad choke groups; pads sharing a non-zero group cut each other off.
 - High-detail per-pad waveform editor with draggable playback START and END markers.
 - Per-pad sample looping with a LOOP switch, NORMAL/PING-PONG playback and

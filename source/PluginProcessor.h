@@ -167,6 +167,8 @@ public:
     void setPadCompressorReleaseMs (int padIndex, float milliseconds);
     float getPadCompressorKneeDb (int padIndex) const;
     void setPadCompressorKneeDb (int padIndex, float decibels);
+    float getPadCompressorGainDb (int padIndex) const;
+    void setPadCompressorGainDb (int padIndex, float decibels);
     float getPadSaturationAmount (int padIndex) const;
     void setPadSaturationAmount (int padIndex, float amount);
     float getPadSaturationHardClipAmount (int padIndex) const;
@@ -214,6 +216,12 @@ public:
     void setGlobalDelayFeedback (float amount);
     float getGlobalDelayMix() const noexcept;
     void setGlobalDelayMix (float amount);
+    float getGlobalDelayDuck() const noexcept;
+    void setGlobalDelayDuck (float amount);
+    float getGlobalDelayDuckAttackMs() const noexcept;
+    void setGlobalDelayDuckAttackMs (float milliseconds);
+    float getGlobalDelayDuckReleaseMs() const noexcept;
+    void setGlobalDelayDuckReleaseMs (float milliseconds);
     bool isGlobalReverbEnabled() const noexcept;
     void setGlobalReverbEnabled (bool shouldBeEnabled);
     float getGlobalReverbSize() const noexcept;
@@ -224,6 +232,10 @@ public:
     void setGlobalReverbWidth (float amount);
     float getGlobalReverbMix() const noexcept;
     void setGlobalReverbMix (float amount);
+    float getGlobalReverbDuck() const noexcept;
+    void setGlobalReverbDuck (float amount);
+    float getMasterVolumeDb() const noexcept;
+    void setMasterVolumeDb (float decibels);
 
     bool isSequencerEnabled() const;
     void setSequencerEnabled (bool shouldBeEnabled);
@@ -256,6 +268,7 @@ public:
     void pasteSequenceLane (int laneIndex);
     void randomiseSequenceLane (int laneIndex);
     void clearSequenceLane (int laneIndex);
+    void nudgeSequenceLane (int laneIndex, int direction);
     bool canUndoSequenceLaneOperation (int laneIndex) const noexcept;
     void undoSequenceLaneOperation (int laneIndex);
     void clearPatternPlaybackChain();
@@ -268,10 +281,13 @@ public:
     bool isPatternAssigned (int patternIndex) const;
     bool patternHasSteps (int patternIndex) const;
     juce::String getPatternName (int patternIndex) const;
+    juce::File getPatternFile (int patternIndex) const;
     juce::String getCurrentKitName() const;
     juce::File getCurrentKitFile() const;
     juce::String getCurrentPatternSetName() const;
+    juce::File getCurrentPatternSetFile() const;
     juce::String getCurrentProjectName() const;
+    juce::File getCurrentProjectFile() const;
     int getPatternMidiNote (int patternIndex) const;
     void setPatternMidiNote (int patternIndex, int midiNote);
     juce::Result loadPatternIntoSlot (int patternIndex, const juce::File& file);
@@ -371,6 +387,7 @@ private:
         juce::RangedAudioParameter* compressorAttack = nullptr;
         juce::RangedAudioParameter* compressorRelease = nullptr;
         juce::RangedAudioParameter* compressorKnee = nullptr;
+        juce::RangedAudioParameter* compressorGain = nullptr;
         juce::RangedAudioParameter* saturationAmount = nullptr;
         juce::RangedAudioParameter* saturationHardClip = nullptr;
         juce::RangedAudioParameter* saturationEnabled = nullptr;
@@ -465,6 +482,7 @@ private:
         std::atomic<float> compressorAttackMs { 10.0f };
         std::atomic<float> compressorReleaseMs { 100.0f };
         std::atomic<float> compressorKneeDb { 6.0f };
+        std::atomic<float> compressorGainDb { 0.0f };
         std::atomic<float> saturationAmount { 0.0f };
         std::atomic<float> saturationHardClipAmount { 0.0f };
         std::atomic<bool> saturationEnabled { false };
@@ -525,6 +543,7 @@ private:
         float compressorAttackMs = 10.0f;
         float compressorReleaseMs = 100.0f;
         float compressorKneeDb = 6.0f;
+        float compressorGainDb = 0.0f;
         float saturationAmount = 0.0f;
         float saturationHardClipAmount = 0.0f;
         bool saturationEnabled = false;
@@ -541,6 +560,7 @@ private:
     {
         std::array<PatternLaneState, numberOfPads> lanes;
         juce::String name;
+        juce::String filePath;
         int bars = 1;
         bool assigned = false;
     };
@@ -568,6 +588,7 @@ private:
     struct PadCompressorDspState
     {
         float gain = 1.0f;
+        float outputGain = 1.0f;
         float wetMix = 0.0f;
         bool wasEnabled = false;
     };
@@ -604,7 +625,9 @@ private:
     juce::String currentKitName { "New Kit" };
     juce::String currentKitFilePath;
     juce::String currentPatternSetName { "New Pattern Set" };
+    juce::String currentPatternSetFilePath;
     juce::String currentProjectName { "New Project" };
+    juce::String currentProjectFilePath;
     KitPadState copiedPad;
     std::atomic<bool> copiedPadAvailable { false };
     StoredPattern copiedPattern;
@@ -650,17 +673,26 @@ private:
     std::atomic<float> globalDelayTimeMs { 250.0f };
     std::atomic<float> globalDelayFeedback { 0.35f };
     std::atomic<float> globalDelayMix { 0.25f };
+    std::atomic<float> globalDelayDuck { 0.0f };
+    std::atomic<float> globalDelayDuckAttackMs { 10.0f };
+    std::atomic<float> globalDelayDuckReleaseMs { 250.0f };
     std::atomic<bool> globalReverbEnabled { false };
     std::atomic<float> globalReverbSize { 0.50f };
     std::atomic<float> globalReverbDamping { 0.50f };
     std::atomic<float> globalReverbWidth { 1.0f };
     std::atomic<float> globalReverbMix { 0.20f };
+    std::atomic<float> globalReverbDuck { 0.0f };
+    std::atomic<float> masterVolumeDb { 0.0f };
     std::array<std::vector<float>, 2> globalDelayBuffer;
+    std::vector<float> globalReverbDuckGain;
     std::array<float, 2> globalDelayFeedbackLowPass {};
     int globalDelayWritePosition = 0;
     float globalDelayCurrentSamples = 0.0f;
     float globalDelayBypassMix = 0.0f;
     float globalReverbBypassMix = 0.0f;
+    float globalDelayDuckEnvelope = 0.0f;
+    float globalReverbDuckEnvelope = 0.0f;
+    float currentMasterGain = 1.0f;
     std::atomic<double> currentHostTempoBpm { 120.0 };
     std::atomic<double> currentHostPpqPosition { 0.0 };
     std::atomic<bool> currentHostTransportPlaying { false };
@@ -710,11 +742,16 @@ private:
     juce::RangedAudioParameter* globalDelayTimeParameter = nullptr;
     juce::RangedAudioParameter* globalDelayFeedbackParameter = nullptr;
     juce::RangedAudioParameter* globalDelayMixParameter = nullptr;
+    juce::RangedAudioParameter* globalDelayDuckParameter = nullptr;
+    juce::RangedAudioParameter* globalDelayDuckAttackParameter = nullptr;
+    juce::RangedAudioParameter* globalDelayDuckReleaseParameter = nullptr;
     juce::RangedAudioParameter* globalReverbEnabledParameter = nullptr;
     juce::RangedAudioParameter* globalReverbSizeParameter = nullptr;
     juce::RangedAudioParameter* globalReverbDampingParameter = nullptr;
     juce::RangedAudioParameter* globalReverbWidthParameter = nullptr;
     juce::RangedAudioParameter* globalReverbMixParameter = nullptr;
+    juce::RangedAudioParameter* globalReverbDuckParameter = nullptr;
+    juce::RangedAudioParameter* masterVolumeParameter = nullptr;
 
     void triggerPadOnAudioThread (int padIndex, float velocity,
                                   int delaySamples = 0,
