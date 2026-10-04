@@ -22,6 +22,8 @@ const juce::Colour loopMarkerColour (0xff23838a);
 const juce::Colour snapMarkerColour (0xff3f965b);
 const juce::Colour knobLabelColour (mutedTextColour);
 const juce::Colour knobValueColour (mutedTextColour.brighter (0.18f));
+const juce::Colour sectionHeadingColour (
+    knobLabelColour.brighter (0.18f));
 const juce::Colour curveKnobColour (0xff56ddea);
 const juce::Colour ampKnobColour (0xff526fcf);
 const juce::Colour saturationKnobColour (0xffc8aa45);
@@ -137,6 +139,48 @@ public:
         const bool usesMixerTrack = style == juce::Slider::LinearVertical
             && static_cast<bool> (slider.getProperties().getWithDefault (
                 "svMixerThinTrack", false));
+        const bool usesMasterVolumeTrack =
+            style == juce::Slider::LinearHorizontal
+            && static_cast<bool> (slider.getProperties().getWithDefault (
+                "svMasterVolumeTrack", false));
+
+        if (usesMasterVolumeTrack)
+        {
+            constexpr float trackWidth = 4.0f;
+            const auto startPoint = juce::Point<float> (
+                static_cast<float> (x),
+                static_cast<float> (y) + static_cast<float> (height) * 0.5f);
+            const auto endPoint = juce::Point<float> (
+                static_cast<float> (x + width), startPoint.y);
+
+            juce::Path backgroundTrack;
+            backgroundTrack.startNewSubPath (startPoint);
+            backgroundTrack.lineTo (endPoint);
+            g.setColour (slider.findColour (
+                juce::Slider::backgroundColourId));
+            g.strokePath (backgroundTrack,
+                          { trackWidth,
+                            juce::PathStrokeType::curved,
+                            juce::PathStrokeType::rounded });
+
+            const auto thumbPoint = juce::Point<float> (
+                sliderPos, startPoint.y);
+            juce::Path valueTrack;
+            valueTrack.startNewSubPath (startPoint);
+            valueTrack.lineTo (thumbPoint);
+            g.setColour (slider.findColour (juce::Slider::trackColourId));
+            g.strokePath (valueTrack,
+                          { trackWidth,
+                            juce::PathStrokeType::curved,
+                            juce::PathStrokeType::rounded });
+
+            const auto thumbWidth = static_cast<float> (
+                getSliderThumbRadius (slider));
+            g.setColour (slider.findColour (juce::Slider::thumbColourId));
+            g.fillEllipse (juce::Rectangle<float> (thumbWidth, thumbWidth)
+                               .withCentre (thumbPoint));
+            return;
+        }
 
         if (! usesMixerTrack)
         {
@@ -231,6 +275,39 @@ public:
                          bool highlighted,
                          bool down) override
     {
+        if (static_cast<bool> (button.getProperties().getWithDefault (
+                "svNudgeArrow", false)))
+        {
+            auto colour = button.findColour (
+                button.getToggleState()
+                    ? juce::TextButton::textColourOnId
+                    : juce::TextButton::textColourOffId);
+
+            if (down)
+                colour = colour.brighter (0.20f);
+            else if (highlighted)
+                colour = colour.brighter (0.10f);
+
+            const auto centre = button.getLocalBounds().toFloat().getCentre();
+            constexpr float halfWidth = 3.25f;
+            constexpr float halfHeight = 4.25f;
+            const bool pointsLeft = button.getButtonText() == "<";
+            const float outerX = centre.x + (pointsLeft ? halfWidth
+                                                        : -halfWidth);
+            const float pointX = centre.x + (pointsLeft ? -halfWidth
+                                                        : halfWidth);
+            juce::Path arrow;
+            arrow.startNewSubPath (outerX, centre.y - halfHeight);
+            arrow.lineTo (pointX, centre.y);
+            arrow.lineTo (outerX, centre.y + halfHeight);
+            g.setColour (colour);
+            g.strokePath (arrow,
+                          juce::PathStrokeType (
+                              1.6f, juce::PathStrokeType::curved,
+                              juce::PathStrokeType::rounded));
+            return;
+        }
+
         if (! static_cast<bool> (button.getProperties().getWithDefault (
                 "svMixerCompact", false)))
         {
@@ -303,9 +380,23 @@ public:
         const bool brightOutline = static_cast<bool> (
             button.getProperties().getWithDefault (
                 juce::Identifier ("svDrummerBrightOutline"), false));
+        const bool dynamicOutline = static_cast<bool> (
+            button.getProperties().getWithDefault (
+                juce::Identifier ("svDrummerDynamicOutline"), false));
         const float outlineBrightness = brightOutline
             ? (highlighted ? 0.42f : 0.22f)
             : (highlighted ? 0.22f : 0.0f);
+        auto outlineColour = dynamicOutline
+            ? button.findColour (juce::TextButton::buttonOnColourId)
+            : lineColour.brighter (outlineBrightness);
+
+        if (dynamicOutline)
+        {
+            if (down)
+                outlineColour = outlineColour.brighter (0.24f);
+            else if (highlighted)
+                outlineColour = outlineColour.brighter (0.12f);
+        }
 
         if (down)
             colour = colour.brighter (0.18f);
@@ -333,7 +424,7 @@ public:
                 ! button.isConnectedOnRight() && ! button.isConnectedOnBottom());
             g.setColour (colour);
             g.fillPath (shape);
-            g.setColour (lineColour.brighter (outlineBrightness));
+            g.setColour (outlineColour);
 
             if (button.getToggleState() && button.isConnectedOnBottom())
             {
@@ -376,7 +467,7 @@ public:
 
         g.setColour (colour);
         g.fillRoundedRectangle (bounds, 3.0f);
-        g.setColour (lineColour.brighter (outlineBrightness));
+        g.setColour (outlineColour);
         g.drawRoundedRectangle (bounds, 3.0f, 1.0f);
     }
 
@@ -3344,6 +3435,7 @@ private:
     {
         auto area = getLocalBounds().toFloat().reduced (8.0f);
         auto header = area.removeFromTop (markerHeaderHeight);
+        header.translate (0.0f, -3.0f);
         header.removeFromLeft (juce::jmin (
             markerHeaderLeftInset,
             juce::jmax (0.0f, header.getWidth() - 420.0f)));
@@ -4527,10 +4619,11 @@ public:
         const auto drawSectionTitle = [&g] (const juce::String& text,
                                             juce::Rectangle<int> bounds)
         {
-            g.setColour (textColour);
+            g.setColour (sectionHeadingColour);
             g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-            g.drawFittedText (text,
-                              bounds.removeFromTop (18).reduced (4, 0),
+            auto titleBounds = bounds.removeFromTop (18).reduced (4, 0);
+            titleBounds.translate (0, -2);
+            g.drawFittedText (text, titleBounds,
                               juce::Justification::centredLeft,
                               1, 0.78f);
         };
@@ -4595,7 +4688,7 @@ public:
         waveformEditor.setBounds (area);
 
         auto waveformHeaderButtons = juce::Rectangle<int> (
-            area.getX() + 8, area.getY() + 8, 354, 24);
+            area.getX() + 8, area.getY() + 5, 354, 24);
         reverseButton.setBounds (
             waveformHeaderButtons.removeFromLeft (92)
                                  .withSizeKeepingCentre (88, 24));
@@ -4629,13 +4722,13 @@ public:
         const auto ledBoundsFor = [] (juce::Rectangle<int> section)
         {
             return juce::Rectangle<int> (section.getRight() - 18,
-                                         section.getY() + 1, 14, 14);
+                                         section.getY(), 14, 14);
         };
         filterEnableButton.setBounds (ledBoundsFor (filterSectionBounds));
         compressorButton.setBounds (ledBoundsFor (compressorSectionBounds));
         saturationEnableButton.setBounds (
             saturationSectionBounds.getRight() + 1,
-            saturationSectionBounds.getY() + 1, 14, 14);
+            saturationSectionBounds.getY(), 14, 14);
 
         const auto makeRows = [] (juce::Rectangle<int> section)
         {
@@ -5479,7 +5572,7 @@ public:
             g.setColour (lineColour.brighter (0.04f));
             g.drawRoundedRectangle (bounds.toFloat().reduced (0.5f),
                                     4.0f, 1.0f);
-            g.setColour (textColour);
+            g.setColour (sectionHeadingColour);
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             auto titleBounds = bounds.removeFromTop (titleHeight).reduced (12, 0);
             titleBounds.translate (0, titleOffsetY);
@@ -5517,7 +5610,9 @@ public:
         auto syncControl = delayRow.removeFromLeft (49);
         delayRow.removeFromLeft (3);
         syncControl.translate (6, 0);
-        delaySyncLabel.setBounds (syncControl.removeFromTop (13));
+        auto syncLabelBounds = syncControl.removeFromTop (13);
+        syncLabelBounds.translate (0, 7);
+        delaySyncLabel.setBounds (syncLabelBounds);
         delaySyncButton.setBounds (
             syncControl.getCentreX() - 7, syncControl.getY() + 12, 14, 14);
         layoutKnobRow (delayRow,
@@ -5704,6 +5799,14 @@ public:
         setClickingTogglesState (true);
     }
 
+    void mouseUp (const juce::MouseEvent& event) override
+    {
+        juce::Button::mouseUp (event);
+
+        if (event.getNumberOfClicks() >= 2 && onDoubleClick)
+            onDoubleClick();
+    }
+
     void paintButton (juce::Graphics& g,
                       bool highlighted,
                       bool down) override
@@ -5746,6 +5849,8 @@ public:
             g.fillPath (triangle);
         }
     }
+
+    std::function<void()> onDoubleClick;
 };
 
 class SVDrummerPatternSlot final : public juce::Component,
@@ -6246,6 +6351,11 @@ public:
             processor.setSequencerEnabled (enableButton.getToggleState());
             syncFromProcessor();
         };
+        enableButton.onDoubleClick = [this]
+        {
+            processor.stopAllPlayback();
+            syncFromProcessor();
+        };
 
         configureLabel (midiModeLabel, "MIDI MODE");
         midiModeButton.setClickingTogglesState (false);
@@ -6431,7 +6541,10 @@ public:
             button->setColour (juce::TextButton::buttonColourId,
                                raisedPanelColour);
             button->setColour (juce::TextButton::textColourOffId,
-                               juce::Colours::white);
+                               knobLabelColour);
+            button->getProperties().set ("svNudgeArrow", true);
+            button->getProperties().set (
+                juce::Identifier ("svDrummerDynamicOutline"), true);
         }
 
         nudgeLeftButton.onClick = [this]
@@ -7204,7 +7317,9 @@ private:
             juce::TextButton::buttonColourId,
             padAccent.withAlpha (0.72f));
 
-        for (auto* slider : { &padVolumeSlider, &padPanSlider, &padTuneSlider })
+        for (auto* slider : { &divisionSlider, &loopLengthSlider,
+                              &padVolumeSlider, &padPanSlider,
+                              &padTuneSlider })
             slider->setColour (juce::Slider::rotarySliderFillColourId,
                                padAccent);
 
@@ -7212,7 +7327,16 @@ private:
                              &padVolumeLabel, &padPanLabel, &padTuneLabel,
                              &padPlaybackModeLabel })
             label->setColour (juce::Label::textColourId,
-                              padAccent.brighter (0.20f));
+                              knobLabelColour);
+
+        for (auto* button : { &nudgeLeftButton, &nudgeRightButton })
+        {
+            button->setColour (juce::TextButton::textColourOffId,
+                               knobLabelColour);
+            button->setColour (juce::TextButton::buttonOnColourId,
+                               padAccent);
+            button->repaint();
+        }
         updatingControls = false;
     }
 
@@ -7734,6 +7858,8 @@ SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (
     masterVolumeLabel.setColour (juce::Label::textColourId, knobLabelColour);
     masterVolumeLabel.setFont (makeKnobLabelFont());
     masterVolumeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    masterVolumeSlider.getProperties().set (
+        "svMasterVolumeTrack", true);
     masterVolumeSlider.setTextBoxStyle (
         juce::Slider::TextBoxRight, true, 66, 20);
     masterVolumeSlider.setRange (-60.0, 6.0, 0.1);

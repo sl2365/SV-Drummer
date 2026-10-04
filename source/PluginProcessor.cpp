@@ -2033,6 +2033,41 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 voice.releaseAtOutputSample = 0;
     }
 
+    if (stopAllPlaybackPending.exchange (false))
+    {
+        for (int padIndex = 0; padIndex < numberOfPads; ++padIndex)
+        {
+            auto& pad = pads[static_cast<std::size_t> (padIndex)];
+
+            for (auto& voice : pad.voices)
+            {
+                voice.active = false;
+                voice.sample.reset();
+            }
+
+            resetPadFilterDspState (padIndex);
+            resetPadCompressorDspState (padIndex);
+            padSaturationDspStates[static_cast<std::size_t> (padIndex)] = {};
+        }
+
+        browserPreviewVoice.active = false;
+        browserPreviewVoice.sample.reset();
+
+        for (auto& channel : globalDelayBuffer)
+            std::fill (channel.begin(), channel.end(), 0.0f);
+
+        globalDelayWritePosition = 0;
+        globalDelayCurrentSamples = 0.0f;
+        globalDelayFeedbackLowPass.fill (0.0f);
+        globalDelayBypassMix = 0.0f;
+        globalDelayDuckEnvelope = 0.0f;
+        globalDelayWasEnabled = false;
+        globalReverb.reset();
+        globalReverbBypassMix = 0.0f;
+        globalReverbDuckEnvelope = 0.0f;
+        globalReverbWasEnabled = false;
+    }
+
     processSequencerTriggers (buffer.getNumSamples());
 
     const bool hasSolo = anyPadIsSoloed();
@@ -5266,6 +5301,15 @@ void SVDrummerAudioProcessor::stopPatternMidiPlayback()
     patternGateRestartCounter.fetch_add (1);
 }
 
+void SVDrummerAudioProcessor::stopAllPlayback()
+{
+    stopPatternMidiPlayback();
+    pendingInterfaceTriggers.store (0);
+    pendingInterfaceReleases.store (0);
+    browserPreviewTriggerPending.store (false);
+    stopAllPlaybackPending.store (true);
+}
+
 SVDrummerAudioProcessor::PatternMidiMode
 SVDrummerAudioProcessor::getPatternMidiMode() const
 {
@@ -8258,7 +8302,7 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "13.0.0");
+    state.setAttribute ("version", "13.4.0");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     {

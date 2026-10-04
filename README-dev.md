@@ -1,4 +1,4 @@
-# SV-Drummer v0.13.0
+# SV-Drummer v0.13.4
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -142,6 +142,29 @@ folder with the current filename prefilled so it can be renamed or copied
 elsewhere. Pattern, Pattern Set and Project file associations are now retained
 in plug-in host state, just as Kit associations already were.
 
+Version 0.13.1 refines the Pad Settings and FX + Mixer headings. AMP, FILTER,
+COMPRESSOR and SATURATION move up two pixels; their amber enable LEDs remain
+vertically centred with the titles. The Delay SYNC label moves down three
+pixels, and all seven section headings use a slightly brighter form of the
+shared knob-label colour. Double-clicking the Sequencer Play/Stop button now
+stops the sequencer and immediately silences every playing sample, Browser
+preview and remaining global-effect tail through an audio-thread-safe request.
+
+Version 0.13.2 vertically centres the complete waveform-header control row by
+moving REVERSE, LOOP, NORMAL/PING-PONG, SNAP and all four marker value controls
+up three pixels together. The Delay SYNC label moves down a further four pixels,
+and the Master Volume slider now uses an exact four-pixel track thickness.
+
+Version 0.13.3 standardises every Sequencer-header control label on the shared
+fixed grey knob-label colour. DIV and LOOP now join PAD VOL, PAD PAN and PAD
+TUNE in using the selected pad colour for their knob indicators. The two NUDGE
+buttons retain neutral borders but use clean, geometrically centred chevrons in
+the selected pad colour.
+
+Version 0.13.4 restores the two centred NUDGE chevrons to their original neutral
+grey and moves the selected-pad colour to the two button borders. Their borders
+continue to brighten on hover and press while following the selected lane.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -160,7 +183,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `0.13.0`
+- Version: `0.13.4`
 
 ## Current features
 

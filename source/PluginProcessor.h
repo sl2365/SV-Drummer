@@ -240,6 +240,7 @@ public:
     bool isSequencerEnabled() const;
     void setSequencerEnabled (bool shouldBeEnabled);
     void stopPatternMidiPlayback();
+    void stopAllPlayback();
     PatternMidiMode getPatternMidiMode() const;
     void setPatternMidiMode (PatternMidiMode newMode);
     PatternSyncMode getPatternSyncMode() const noexcept;
@@ -607,6 +608,7 @@ private:
     std::array<std::atomic<float>, numberOfPads> pendingInterfaceVelocities;
     std::atomic<std::uint32_t> pendingInterfaceTriggers { 0 };
     std::atomic<std::uint32_t> pendingInterfaceReleases { 0 };
+    std::atomic<bool> stopAllPlaybackPending { false };
     std::atomic<bool> sequencerEnabled { false };
     std::atomic<int> patternMidiMode {
         static_cast<int> (PatternMidiMode::select)
