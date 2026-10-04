@@ -252,6 +252,7 @@ public:
     int getLaneLoopLength (int laneIndex) const;
     void setLaneLoopLength (int laneIndex, int lengthInSteps);
     int getLaneMaximumLoopLength (int laneIndex) const;
+    bool sequenceLaneHasSteps (int laneIndex) const;
     int getSequenceStepVelocity (int laneIndex, int stepIndex) const;
     void setSequenceStepVelocity (int laneIndex, int stepIndex, int velocity);
     int getActiveSequenceStep (int laneIndex) const;
@@ -293,6 +294,11 @@ public:
     void setPatternMidiNote (int patternIndex, int midiNote);
     juce::Result loadPatternIntoSlot (int patternIndex, const juce::File& file);
     juce::Result savePatternSlotToFile (int patternIndex, const juce::File& file);
+    juce::Result exportSequenceLaneToMidiFile (int laneIndex,
+                                               const juce::File& file);
+    juce::Result exportPatternToMidiFile (int patternIndex,
+                                          const juce::File& file);
+    juce::Result exportAllPatternsToMidiFiles (const juce::File& directory);
     void copyPatternSlot (int patternIndex);
     bool canPastePatternSlot() const noexcept;
     void pastePatternSlot (int patternIndex);
@@ -341,6 +347,7 @@ public:
     juce::File getPortableKitsDirectory() const;
     juce::File getPortablePatternsDirectory() const;
     juce::File getPortableProjectsDirectory() const;
+    juce::File getPortableMidiDirectory() const;
     juce::Result savePortableSettingsNow();
     int getEditorZoomPercent() const noexcept;
     void setEditorZoomPercent (int zoomPercent) noexcept;
@@ -830,6 +837,10 @@ private:
     juce::Result loadPatternSetXml (const juce::XmlElement& patternSetXml);
     juce::Result saveStoredPatternToFile (int patternIndex,
                                            const juce::File& file);
+    juce::Result writePatternMidiFile (const StoredPattern& pattern,
+                                       int patternIndex,
+                                       int laneIndex,
+                                       const juce::File& file) const;
 
     void loadPortableSettings();
     juce::Result savePortableSettings();

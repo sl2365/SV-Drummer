@@ -5470,6 +5470,18 @@ int SVDrummerAudioProcessor::getLaneMaximumLoopLength (int laneIndex) const
         getPatternBars() * getSequencerStepsPerBar (getLaneDivision (laneIndex)));
 }
 
+bool SVDrummerAudioProcessor::sequenceLaneHasSteps (int laneIndex) const
+{
+    if (! isValidPadIndex (laneIndex))
+        return false;
+
+    for (int step = 0; step < getLaneMaximumLoopLength (laneIndex); ++step)
+        if (getSequenceStepVelocity (laneIndex, step) > 0)
+            return true;
+
+    return false;
+}
+
 int SVDrummerAudioProcessor::getSequenceStepVelocity (int laneIndex, int stepIndex) const
 {
     if (! isValidPadIndex (laneIndex)
@@ -5908,11 +5920,8 @@ bool SVDrummerAudioProcessor::patternHasSteps (int patternIndex) const
     if (patternIndex == currentPatternIndex.load())
     {
         for (int laneIndex = 0; laneIndex < numberOfPads; ++laneIndex)
-            for (int step = 0;
-                 step < getLaneMaximumLoopLength (laneIndex);
-                 ++step)
-                if (getSequenceStepVelocity (laneIndex, step) > 0)
-                    return true;
+            if (sequenceLaneHasSteps (laneIndex))
+                return true;
 
         return false;
     }
@@ -6736,6 +6745,11 @@ juce::File SVDrummerAudioProcessor::getPortablePatternsDirectory() const
 juce::File SVDrummerAudioProcessor::getPortableProjectsDirectory() const
 {
     return getPortableDataDirectory().getChildFile ("Projects");
+}
+
+juce::File SVDrummerAudioProcessor::getPortableMidiDirectory() const
+{
+    return getPortableDataDirectory().getChildFile ("MIDI");
 }
 
 juce::File SVDrummerAudioProcessor::getPortableSettingsFile() const
@@ -7596,6 +7610,210 @@ juce::Result SVDrummerAudioProcessor::savePatternSlotToFile (
     return saveStoredPatternToFile (patternIndex, file);
 }
 
+juce::Result SVDrummerAudioProcessor::writePatternMidiFile (
+    const StoredPattern& pattern, int patternIndex, int laneIndex,
+    const juce::File& file) const
+{
+    if (laneIndex < -1 || laneIndex >= numberOfPads)
+        return juce::Result::fail ("Invalid sequencer lane.");
+
+    if (file.getParentDirectory().createDirectory().failed())
+        return juce::Result::fail ("The MIDI export folder could not be created.");
+
+    constexpr int ticksPerQuarterNote = 960;
+    constexpr int midiChannel = 10;
+    const int bars = juce::jlimit (1, maximumPatternBars, pattern.bars);
+    const double patternQuarterNotes = static_cast<double> (bars) * 4.0;
+    const int patternEndTick = juce::roundToInt (
+        patternQuarterNotes * static_cast<double> (ticksPerQuarterNote));
+    const auto addEventAt = [] (juce::MidiMessageSequence& sequence,
+                                juce::MidiMessage message,
+                                double timestamp)
+    {
+        message.setTimeStamp (timestamp);
+        sequence.addEvent (message);
+    };
+
+    juce::MidiMessageSequence conductorTrack;
+    const double bpm = juce::jlimit (
+        1.0, 999.0, currentHostTempoBpm.load());
+    addEventAt (
+        conductorTrack,
+        juce::MidiMessage::tempoMetaEvent (
+            juce::roundToInt (60000000.0 / bpm)),
+        0.0);
+    addEventAt (conductorTrack,
+                juce::MidiMessage::timeSignatureMetaEvent (4, 4), 0.0);
+    addEventAt (conductorTrack, juce::MidiMessage::endOfTrack(),
+                static_cast<double> (patternEndTick));
+    conductorTrack.sort();
+
+    juce::MidiMessageSequence noteTrack;
+    const auto patternNumber = juce::String (patternIndex + 1);
+    const auto trackName = laneIndex >= 0
+        ? "SV-Drummer Pattern " + patternNumber
+            + " - Lane " + juce::String (laneIndex + 1)
+        : "SV-Drummer Pattern " + patternNumber;
+    addEventAt (noteTrack,
+                juce::MidiMessage::textMetaEvent (3, trackName), 0.0);
+
+    const int firstLane = laneIndex >= 0 ? laneIndex : 0;
+    const int lastLane = laneIndex >= 0 ? laneIndex + 1 : numberOfPads;
+
+    for (int currentLane = firstLane; currentLane < lastLane; ++currentLane)
+    {
+        const auto& lane = pattern.lanes[static_cast<std::size_t> (currentLane)];
+        const int division = juce::jlimit (
+            0, sequencerDivisionCount - 1, lane.division);
+        const int totalSteps = bars * getSequencerStepsPerBar (division);
+        const int loopLength = juce::jlimit (
+            1, juce::jmax (1, totalSteps), lane.loopLength);
+        const double stepQuarterNotes =
+            getSequencerQuarterNotesPerStep (division);
+        const double noteLengthScale =
+            isPadSequencerGated (currentLane) ? 1.0 : 0.25;
+        const int midiNote = juce::jlimit (
+            0, 127, getPadMidiNote (currentLane));
+
+        for (int absoluteStep = 0; absoluteStep < totalSteps; ++absoluteStep)
+        {
+            const int sourceStep = absoluteStep % loopLength;
+            const int velocity = static_cast<int> (
+                lane.stepVelocities[static_cast<std::size_t> (sourceStep)]);
+
+            if (velocity <= 0)
+                continue;
+
+            const double startQuarterNotes =
+                static_cast<double> (absoluteStep) * stepQuarterNotes;
+            const double endQuarterNotes = juce::jmin (
+                patternQuarterNotes,
+                startQuarterNotes + stepQuarterNotes * noteLengthScale);
+            const int startTick = juce::roundToInt (
+                startQuarterNotes
+                    * static_cast<double> (ticksPerQuarterNote));
+            const int endTick = juce::jlimit (
+                startTick + 1, patternEndTick,
+                juce::roundToInt (
+                    endQuarterNotes
+                        * static_cast<double> (ticksPerQuarterNote)));
+
+            addEventAt (
+                noteTrack,
+                juce::MidiMessage::noteOn (
+                    midiChannel, midiNote,
+                    static_cast<juce::uint8> (
+                        juce::jlimit (1, 127, velocity))),
+                static_cast<double> (startTick));
+            addEventAt (
+                noteTrack,
+                juce::MidiMessage::noteOff (midiChannel, midiNote),
+                static_cast<double> (endTick));
+        }
+    }
+
+    addEventAt (noteTrack, juce::MidiMessage::endOfTrack(),
+                static_cast<double> (patternEndTick));
+    noteTrack.sort();
+    noteTrack.updateMatchedPairs();
+
+    juce::MidiFile midiFile;
+    midiFile.setTicksPerQuarterNote (ticksPerQuarterNote);
+    midiFile.addTrack (conductorTrack);
+    midiFile.addTrack (noteTrack);
+
+    juce::FileOutputStream output (file);
+
+    if (! output.openedOk())
+        return juce::Result::fail (
+            "The MIDI file could not be opened for writing.");
+
+    if (! output.setPosition (0) || output.truncate().failed())
+        return juce::Result::fail (
+            "The existing MIDI file could not be replaced.");
+
+    if (! midiFile.writeTo (output, 1))
+        return juce::Result::fail ("The MIDI file could not be written.");
+
+    output.flush();
+
+    if (output.getStatus().failed())
+        return juce::Result::fail (output.getStatus().getErrorMessage());
+
+    return juce::Result::ok();
+}
+
+juce::Result SVDrummerAudioProcessor::exportSequenceLaneToMidiFile (
+    int laneIndex, const juce::File& file)
+{
+    if (! isValidPadIndex (laneIndex))
+        return juce::Result::fail ("Invalid sequencer lane.");
+
+    if (! sequenceLaneHasSteps (laneIndex))
+        return juce::Result::fail ("This Sequence lane does not contain any steps.");
+
+    captureCurrentPattern();
+    const int patternIndex = getCurrentPatternIndex();
+    return writePatternMidiFile (
+        storedPatterns[static_cast<std::size_t> (patternIndex)],
+        patternIndex, laneIndex, file);
+}
+
+juce::Result SVDrummerAudioProcessor::exportPatternToMidiFile (
+    int patternIndex, const juce::File& file)
+{
+    if (! isValidPatternIndex (patternIndex))
+        return juce::Result::fail ("Invalid pattern slot.");
+
+    if (! patternHasSteps (patternIndex))
+        return juce::Result::fail ("This Pattern does not contain any steps.");
+
+    if (patternIndex == currentPatternIndex.load())
+        captureCurrentPattern();
+
+    return writePatternMidiFile (
+        storedPatterns[static_cast<std::size_t> (patternIndex)],
+        patternIndex, -1, file);
+}
+
+juce::Result SVDrummerAudioProcessor::exportAllPatternsToMidiFiles (
+    const juce::File& directory)
+{
+    captureCurrentPattern();
+    int patternsToExport = 0;
+
+    for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
+        if (patternHasSteps (patternIndex))
+            ++patternsToExport;
+
+    if (patternsToExport == 0)
+        return juce::Result::fail (
+            "The Pattern Set does not contain any Patterns with steps.");
+
+    if (directory.createDirectory().failed())
+        return juce::Result::fail ("The MIDI export folder could not be created.");
+
+    for (int patternIndex = 0; patternIndex < numberOfPatterns; ++patternIndex)
+    {
+        if (! patternHasSteps (patternIndex))
+            continue;
+
+        const auto outputFile = directory.getChildFile (
+            "Pattern " + juce::String (patternIndex + 1) + ".mid");
+        const auto result = writePatternMidiFile (
+            storedPatterns[static_cast<std::size_t> (patternIndex)],
+            patternIndex, -1, outputFile);
+
+        if (result.failed())
+            return juce::Result::fail (
+                "Pattern " + juce::String (patternIndex + 1)
+                    + " could not be exported.\n\n"
+                    + result.getErrorMessage());
+    }
+
+    return juce::Result::ok();
+}
+
 void SVDrummerAudioProcessor::copyPatternSlot (int patternIndex)
 {
     if (! isValidPatternIndex (patternIndex))
@@ -8302,7 +8520,7 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "1.14.2");
+    state.setAttribute ("version", "1.14.4");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     {

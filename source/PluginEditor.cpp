@@ -6145,6 +6145,11 @@ private:
                       processor.patternHasSteps (patternIndex));
         menu.addItem (7, "Undo Last Operation",
                       processor.canUndoPatternOperation (patternIndex));
+        if (processor.patternHasSteps (patternIndex))
+        {
+            menu.addSeparator();
+            menu.addItem (10, "Export Pattern as MIDI...");
+        }
         menu.addSeparator();
         menu.addItem (2, "MIDI Note Off", true,
                       processor.getPatternMidiNote (patternIndex) < 0);
@@ -6175,6 +6180,8 @@ private:
                 else if (result == 7)
                     safeThis->processor.undoPatternOperation (
                         safeThis->patternIndex);
+                else if (result == 10)
+                    safeThis->exportPatternAsMidi();
                 else if (result == 2)
                     safeThis->processor.setPatternMidiNote (
                         safeThis->patternIndex, -1);
@@ -6183,6 +6190,47 @@ private:
                         safeThis->patternIndex, 60 + safeThis->patternIndex);
 
                 safeThis->repaint();
+            });
+    }
+
+    void exportPatternAsMidi()
+    {
+        auto midiDirectory = processor.getPortableMidiDirectory();
+        midiDirectory.createDirectory();
+        const auto initialFile = midiDirectory.getChildFile (
+            "Pattern " + juce::String (patternIndex + 1) + ".mid");
+
+        midiExportChooser = std::make_unique<juce::FileChooser> (
+            "Export SV-Drummer Pattern as MIDI", initialFile, "*.mid", true);
+
+        juce::Component::SafePointer<SVDrummerPatternSlot> safeThis (this);
+        midiExportChooser->launchAsync (
+            juce::FileBrowserComponent::saveMode
+                | juce::FileBrowserComponent::canSelectFiles
+                | juce::FileBrowserComponent::warnAboutOverwriting,
+            [safeThis] (const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                auto resultFile = chooser.getResult();
+
+                if (resultFile == juce::File())
+                    return;
+
+                if (! resultFile.hasFileExtension ("mid"))
+                    resultFile = resultFile.withFileExtension ("mid");
+
+                const auto result = safeThis->processor.exportPatternToMidiFile (
+                    safeThis->patternIndex, resultFile);
+
+                if (result.failed())
+                {
+                    juce::AlertWindow::showMessageBoxAsync (
+                        juce::MessageBoxIconType::WarningIcon,
+                        "SV-Drummer MIDI Export Failed",
+                        result.getErrorMessage());
+                }
             });
     }
 
@@ -6440,6 +6488,7 @@ private:
     std::function<void()> onPatternLibraryChanged;
     std::function<void()> onLoadCompleted;
     std::unique_ptr<juce::FileChooser> patternSaveChooser;
+    std::unique_ptr<juce::FileChooser> midiExportChooser;
     bool dropHighlight = false;
 };
 
@@ -7112,6 +7161,12 @@ private:
             patternLane ? processor.canUndoPatternPlaybackChain()
                         : processor.canUndoSequenceLaneOperation (lane));
 
+        if (! patternLane && processor.sequenceLaneHasSteps (lane))
+        {
+            menu.addSeparator();
+            menu.addItem (8, "Export Lane as MIDI...");
+        }
+
         juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
         menu.showMenuAsync (
             juce::PopupMenu::Options().withTargetScreenArea (
@@ -7147,6 +7202,8 @@ private:
                         safeThis->processor.clearSequenceLane (lane);
                     else if (result == 5)
                         safeThis->processor.undoSequenceLaneOperation (lane);
+                    else if (result == 8)
+                        safeThis->chooseLaneMidiExport (lane);
 
                     safeThis->syncLaneControls();
                 }
@@ -7158,10 +7215,29 @@ private:
     void showPatternMenu()
     {
         juce::PopupMenu menu;
+        bool hasPatternsToExport = false;
+
+        for (int pattern = 0;
+             pattern < SVDrummerAudioProcessor::numberOfPatterns;
+             ++pattern)
+        {
+            if (processor.patternHasSteps (pattern))
+            {
+                hasPatternsToExport = true;
+                break;
+            }
+        }
+
         menu.addItem (1, "Save Pattern Set");
         menu.addItem (2, "Save Pattern Set As...");
         menu.addSeparator();
         menu.addItem (3, "Load Pattern Set");
+
+        if (hasPatternsToExport)
+        {
+            menu.addSeparator();
+            menu.addItem (4, "Export All Patterns as MIDI...");
+        }
 
         juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
         menu.showMenuAsync (
@@ -7177,7 +7253,145 @@ private:
                     safeThis->savePatternSetToLibrary (true);
                 else if (result == 3)
                     safeThis->choosePatternSetToLoad();
+                else if (result == 4)
+                    safeThis->chooseAllPatternsMidiExport();
             });
+    }
+
+    void chooseLaneMidiExport (int lane)
+    {
+        auto midiDirectory = processor.getPortableMidiDirectory();
+        midiDirectory.createDirectory();
+        const auto initialFile = midiDirectory.getChildFile (
+            "Pattern " + juce::String (processor.getCurrentPatternIndex() + 1)
+                + " - Lane " + juce::String (lane + 1) + ".mid");
+
+        laneMidiExportChooser = std::make_unique<juce::FileChooser> (
+            "Export SV-Drummer Lane as MIDI", initialFile, "*.mid", true);
+
+        juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
+        laneMidiExportChooser->launchAsync (
+            juce::FileBrowserComponent::saveMode
+                | juce::FileBrowserComponent::canSelectFiles
+                | juce::FileBrowserComponent::warnAboutOverwriting,
+            [safeThis, lane] (const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                auto resultFile = chooser.getResult();
+
+                if (resultFile == juce::File())
+                    return;
+
+                if (! resultFile.hasFileExtension ("mid"))
+                    resultFile = resultFile.withFileExtension ("mid");
+
+                const auto result =
+                    safeThis->processor.exportSequenceLaneToMidiFile (
+                        lane, resultFile);
+
+                if (result.failed())
+                {
+                    juce::AlertWindow::showMessageBoxAsync (
+                        juce::MessageBoxIconType::WarningIcon,
+                        "SV-Drummer MIDI Export Failed",
+                        result.getErrorMessage());
+                }
+            });
+    }
+
+    void chooseAllPatternsMidiExport()
+    {
+        auto midiDirectory = processor.getPortableMidiDirectory();
+        midiDirectory.createDirectory();
+        allPatternsMidiExportChooser = std::make_unique<juce::FileChooser> (
+            "Choose a Folder for the Exported MIDI Patterns",
+            midiDirectory, juce::String(), true);
+
+        juce::Component::SafePointer<SVDrummerSequencerPanel> safeThis (this);
+        allPatternsMidiExportChooser->launchAsync (
+            juce::FileBrowserComponent::openMode
+                | juce::FileBrowserComponent::canSelectDirectories,
+            [safeThis] (const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                const auto directory = chooser.getResult();
+
+                if (directory == juce::File())
+                    return;
+
+                bool willOverwrite = false;
+
+                for (int pattern = 1;
+                     pattern <= SVDrummerAudioProcessor::numberOfPatterns;
+                     ++pattern)
+                {
+                    if (! safeThis->processor.patternHasSteps (pattern - 1))
+                        continue;
+
+                    if (directory.getChildFile (
+                            "Pattern " + juce::String (pattern) + ".mid")
+                            .existsAsFile())
+                    {
+                        willOverwrite = true;
+                        break;
+                    }
+                }
+
+                if (! willOverwrite)
+                {
+                    safeThis->finishExportingAllPatterns (directory);
+                    return;
+                }
+
+                juce::AlertWindow::showOkCancelBox (
+                    juce::MessageBoxIconType::QuestionIcon,
+                    "Replace Existing MIDI Files?",
+                    "One or more non-empty Pattern MIDI files already exist "
+                    "in this folder. Replace them?",
+                    "Replace", "Cancel", safeThis,
+                    juce::ModalCallbackFunction::create (
+                        [safeThis, directory] (int result)
+                        {
+                            if (safeThis != nullptr && result != 0)
+                                safeThis->finishExportingAllPatterns (
+                                    directory);
+                        }));
+            });
+    }
+
+    void finishExportingAllPatterns (const juce::File& directory)
+    {
+        const auto result = processor.exportAllPatternsToMidiFiles (directory);
+
+        if (result.failed())
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "SV-Drummer MIDI Export Failed",
+                result.getErrorMessage());
+            return;
+        }
+
+        int exportedPatterns = 0;
+
+        for (int pattern = 0;
+             pattern < SVDrummerAudioProcessor::numberOfPatterns;
+             ++pattern)
+            if (processor.patternHasSteps (pattern))
+                ++exportedPatterns;
+
+        juce::AlertWindow::showMessageBoxAsync (
+            juce::MessageBoxIconType::InfoIcon,
+            "SV-Drummer MIDI Export Complete",
+            juce::String (exportedPatterns)
+                + (exportedPatterns == 1
+                       ? " non-empty Pattern was exported to:\n\n"
+                       : " non-empty Patterns were exported to:\n\n")
+                + directory.getFullPathName());
     }
 
     void savePatternSetToLibrary (bool saveAs)
@@ -7929,6 +8143,8 @@ private:
     juce::ScrollBar barScroll;
     std::unique_ptr<juce::FileChooser> patternSetSaveChooser;
     std::unique_ptr<juce::FileChooser> patternSetLoadChooser;
+    std::unique_ptr<juce::FileChooser> laneMidiExportChooser;
+    std::unique_ptr<juce::FileChooser> allPatternsMidiExportChooser;
     std::array<std::unique_ptr<SVDrummerPatternSlot>,
                SVDrummerAudioProcessor::numberOfPatterns> patternSlots;
     std::array<double, SVDrummerAudioProcessor::numberOfPads> resetDivisions {};

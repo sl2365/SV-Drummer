@@ -36,6 +36,8 @@ and match sounds and rhythms.
   Trigger/Gated playback, Nudge, Copy, Paste, Random, Clear and Undo.
 - Sixteen Pattern slots plus a Pattern-chain lane for arranging complete
   Patterns into longer performances.
+- MIDI export for individual Sequence lanes, complete Patterns or every
+  non-empty Pattern in a Pattern Set.
 - Manual, Gate and Hold MIDI Pattern modes with Played, Beat and Bar switching.
 - Global Delay and Reverb with independent sends and ducking.
 - Sixteen-channel pad mixer with Volume, Pan, Mute, Solo, Output, Delay Send and
@@ -65,6 +67,7 @@ Data/
   Patterns/
     Patterns/
     Pattern Sets/
+  MIDI/
   Projects/
   Settings/
     SV-Drummer.ini
@@ -129,7 +132,7 @@ This tab contains separate **Patterns** and **Pattern Sets** folders.
 - Use the Browser's **Save**, **Save As** and **Load** buttons for the currently
   selected individual Pattern.
 - Use **PATTERNS > MENU** above the Pattern buttons to Save, Save As or Load a
-  complete Pattern Set.
+  complete Pattern Set, or to export all its non-empty Patterns as MIDI files.
 
 ### Projects
 
@@ -235,7 +238,8 @@ Editing the grid:
 - Left-click or left-drag to add steps.
 - Right-click or right-drag to delete steps.
 - Scroll over an active step to change its velocity.
-- Right-click a pad-lane header for Copy, Paste, Random, Clear and Undo.
+- Right-click a pad-lane header for Copy, Paste, Random, Clear and Undo. A lane
+  containing steps also provides **Export Lane as MIDI**.
 - Double-click Play/Stop to stop the sequencer and immediately silence all
   samples, Browser preview and global-effect tails.
 
@@ -256,7 +260,8 @@ Pattern buttons:
 - Click a Pattern button to select it.
 - Scroll over its note field to assign a Pattern-selection MIDI note.
 - Right-click for Save Pattern, Save As, Copy, Paste, Random, Clear, Undo and
-  MIDI-note options.
+  MIDI-note options. A Pattern containing steps also provides **Export Pattern
+  as MIDI**.
 - A red dot marks a Pattern containing steps.
 - Pattern MIDI assignments default to `OFF`, preventing conflicts with pad
   notes. Default Pattern notes begin at MIDI note 60.
@@ -289,6 +294,25 @@ Pattern-chain lane:
 
 In Hold mode, the current Pattern continues playing while a Beat- or Bar-synced
 change waits for its boundary.
+
+## MIDI export
+
+SV-Drummer can export sequencer note data as standard `.mid` files:
+
+- Right-click a non-empty Sequence lane header and choose **Export Lane as
+  MIDI** to export that pad lane only.
+- Right-click a non-empty Pattern button and choose **Export Pattern as MIDI**
+  to export all sixteen lanes in that Pattern.
+- Open **PATTERNS > MENU** and choose **Export All Patterns as MIDI** to select
+  a destination folder. Only Patterns containing steps are written, using
+  their slot numbers as `Pattern 1.mid` through `Pattern 16.mid`; empty Pattern
+  numbers are skipped.
+
+Exports preserve each pad's assigned MIDI note, step velocity, lane Division,
+Loop length and complete Pattern length. Trigger lanes create short notes;
+Gated lanes hold each note to the end of its step. Explicit Note Off events are
+included in both cases. Files use MIDI channel 10, 960 PPQ, 4/4 and the current
+host tempo. New exports default to the portable `Data\MIDI` folder.
 
 ## FX + Mixer
 

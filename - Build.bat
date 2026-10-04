@@ -90,9 +90,11 @@ if not exist "%FINAL_PLUGIN%" goto :copy_failed
 if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
 if not exist "%DATA_DIR%\Samples" mkdir "%DATA_DIR%\Samples"
 if not exist "%DATA_DIR%\Patterns" mkdir "%DATA_DIR%\Patterns"
+if not exist "%DATA_DIR%\MIDI" mkdir "%DATA_DIR%\MIDI"
 if not exist "%DATA_DIR%\Settings" mkdir "%DATA_DIR%\Settings"
 if not exist "%DATA_DIR%\Samples" goto :data_failed
 if not exist "%DATA_DIR%\Patterns" goto :data_failed
+if not exist "%DATA_DIR%\MIDI" goto :data_failed
 if not exist "%DATA_DIR%\Settings" goto :data_failed
 
 echo       PASS

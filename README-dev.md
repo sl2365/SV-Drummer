@@ -1,4 +1,4 @@
-# SV-Drummer v1.14.2
+# SV-Drummer v1.14.4
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -202,6 +202,22 @@ Version 1.14.2 promotes SV-Drummer to its version-1 release numbering. The
 build metadata, displayed GUI version and saved-state version marker now all
 use the same `1.14.2` value; subsequent releases continue from this series.
 
+Version 1.14.3 adds Standard MIDI File export at three levels. Right-click a
+Sequence lane to export that lane, right-click a Pattern button to export all
+sixteen lanes in that Pattern, or use `PATTERNS` > `MENU` to export all sixteen
+Patterns as `Pattern 1.mid` through `Pattern 16.mid`. Exports are type-1 MIDI at
+960 PPQ on channel 10, include 4/4 and the current host tempo, preserve the pad
+note and step velocity, repeat lane loops through the complete Pattern length,
+and write explicit Note Off events. Trigger lanes use one-quarter-step notes;
+Gated lanes hold notes for the full step. The portable build now creates
+`Data\MIDI` as the default export location.
+
+Version 1.14.4 hides `Export Lane as MIDI` when the selected Sequence lane is
+empty and hides `Export Pattern as MIDI` when a Pattern contains no steps.
+`Export All Patterns as MIDI` now writes only non-empty Patterns, retaining
+their Pattern-slot numbers in filenames while omitting empty slots. The main
+README now documents all three MIDI export workflows.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -220,7 +236,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.14.2`
+- Version: `1.14.4`
 
 ## Current features
 
