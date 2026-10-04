@@ -8302,7 +8302,7 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "13.4.0");
+    state.setAttribute ("version", "1.14.2");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     {

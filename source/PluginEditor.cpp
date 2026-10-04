@@ -56,6 +56,47 @@ juce::String formatCompactMilliseconds (double value)
     return juce::String (juce::roundToInt (value)) + " ms";
 }
 
+void drawPatternIcon (juce::Graphics& g,
+                      const juce::Rectangle<float>& bounds)
+{
+    static constexpr bool steps[4][5]
+    {
+        { true,  false, true,  false, true  },
+        { true,  true,  false, true,  false },
+        { false, true,  true,  false, true  },
+        { true,  false, true,  true,  false }
+    };
+
+    constexpr int numberOfRows = 4;
+    constexpr int numberOfColumns = 5;
+    const float columnWidth = bounds.getWidth()
+                            / static_cast<float> (numberOfColumns);
+    const float dashWidth = columnWidth * 0.82f;
+    const float dashHeight = juce::jlimit (
+        1.8f, 2.5f, bounds.getHeight() * 0.14f);
+    const float rowGap = (bounds.getHeight()
+                        - dashHeight * static_cast<float> (numberOfRows))
+                       / static_cast<float> (numberOfRows - 1);
+
+    for (int row = 0; row < numberOfRows; ++row)
+    {
+        const float y = bounds.getY()
+                      + static_cast<float> (row) * (dashHeight + rowGap);
+
+        for (int column = 0; column < numberOfColumns; ++column)
+        {
+            if (! steps[row][column])
+                continue;
+
+            const float x = bounds.getX()
+                          + static_cast<float> (column) * columnWidth
+                          + (columnWidth - dashWidth) * 0.5f;
+            g.fillRoundedRectangle (x, y, dashWidth, dashHeight,
+                                    dashHeight * 0.42f);
+        }
+    }
+}
+
 float shapeAttackPhase (float phase, float curve) noexcept
 {
     const float linear = juce::jlimit (0.0f, 1.0f, phase);
@@ -587,7 +628,7 @@ public:
                                  || icon == Icon::patterns
                                  || icon == Icon::projects;
         auto iconBounds = browserTabIcon
-                            ? juce::Rectangle<float> (22.0f, 16.0f)
+                            ? juce::Rectangle<float> (25.0f, 18.0f)
                                   .withCentre (bounds.getCentre())
                             : bounds.reduced (7.0f, 5.0f);
         const auto centre = iconBounds.getCentre();
@@ -657,28 +698,34 @@ public:
         }
         else if (icon == Icon::save || icon == Icon::saveAs)
         {
-            auto disk = iconBounds.reduced (1.0f, 0.0f);
+            const float diskSize = juce::jmin (iconBounds.getWidth(),
+                                               iconBounds.getHeight());
+            const auto disk = juce::Rectangle<float> (diskSize, diskSize)
+                                  .withCentre (iconBounds.getCentre());
             g.drawRoundedRectangle (disk, 1.5f, 1.6f);
-            auto label = disk.removeFromTop (disk.getHeight() * 0.44f)
+            auto diskInterior = disk;
+            auto label = diskInterior
+                             .removeFromTop (diskInterior.getHeight() * 0.44f)
                              .reduced (3.0f, 1.0f);
             g.fillRect (label);
-            auto hub = disk.reduced (3.0f, 2.0f);
+            auto hub = diskInterior.reduced (3.0f, 2.0f);
             g.drawRect (hub, 1.2f);
 
             if (icon == Icon::saveAs)
             {
                 const auto plusCentre = juce::Point<float> (
-                    iconBounds.getRight() - 2.0f,
-                    iconBounds.getBottom() - 1.5f);
-                g.setColour (background.brighter (0.55f));
-                g.fillEllipse (plusCentre.x - 4.5f, plusCentre.y - 4.5f,
-                               9.0f, 9.0f);
+                    disk.getRight() - 1.5f,
+                    disk.getBottom() - 1.0f);
+                g.setColour (snapMarkerColour.withAlpha (
+                    isEnabled() ? 0.94f : 0.34f));
+                g.fillEllipse (plusCentre.x - 5.5f, plusCentre.y - 5.5f,
+                               11.0f, 11.0f);
                 g.setColour (textColour.withAlpha (
                     isEnabled() ? 0.94f : 0.34f));
-                g.drawLine (plusCentre.x - 2.5f, plusCentre.y,
-                            plusCentre.x + 2.5f, plusCentre.y, 1.4f);
-                g.drawLine (plusCentre.x, plusCentre.y - 2.5f,
-                            plusCentre.x, plusCentre.y + 2.5f, 1.4f);
+                g.drawLine (plusCentre.x - 3.2f, plusCentre.y,
+                            plusCentre.x + 3.2f, plusCentre.y, 1.5f);
+                g.drawLine (plusCentre.x, plusCentre.y - 3.2f,
+                            plusCentre.x, plusCentre.y + 3.2f, 1.5f);
             }
         }
         else if (icon == Icon::load)
@@ -702,22 +749,31 @@ public:
         }
         else if (icon == Icon::openFolder)
         {
-            auto folder = iconBounds.reduced (1.0f, 2.0f);
+            auto folder = iconBounds.expanded (1.0f, 0.0f)
+                                    .reduced (0.0f, 1.0f);
+            constexpr float tabWidth = 7.0f;
+            constexpr float shoulderWidth = 2.0f;
+            constexpr float tabTopInset = 0.5f;
+            constexpr float bodyTop = 4.0f;
             juce::Path shape;
-            shape.startNewSubPath (folder.getX(), folder.getY() + 3.0f);
-            shape.lineTo (folder.getX() + folder.getWidth() * 0.38f,
-                          folder.getY() + 3.0f);
-            shape.lineTo (folder.getX() + folder.getWidth() * 0.49f,
-                          folder.getY() + 0.5f);
-            shape.lineTo (folder.getRight(), folder.getY() + 0.5f);
+            shape.startNewSubPath (folder.getX(),
+                                   folder.getY() + bodyTop);
+            shape.lineTo (folder.getX(),
+                          folder.getY() + tabTopInset);
+            shape.lineTo (folder.getX() + tabWidth,
+                          folder.getY() + tabTopInset);
+            shape.lineTo (folder.getX() + tabWidth + shoulderWidth,
+                          folder.getY() + bodyTop);
+            shape.lineTo (folder.getRight(),
+                          folder.getY() + bodyTop);
             shape.lineTo (folder.getRight(), folder.getBottom());
             shape.lineTo (folder.getX(), folder.getBottom());
             shape.closeSubPath();
             g.strokePath (shape, juce::PathStrokeType (
                 1.6f, juce::PathStrokeType::curved,
                 juce::PathStrokeType::rounded));
-            g.drawLine (folder.getX() + 2.0f, folder.getY() + 6.0f,
-                        folder.getRight() - 2.0f, folder.getY() + 6.0f, 1.3f);
+            g.drawLine (folder.getX() + 1.5f, folder.getY() + 6.5f,
+                        folder.getRight() - 1.5f, folder.getY() + 6.5f, 1.3f);
         }
         else if (icon == Icon::samples)
         {
@@ -755,17 +811,7 @@ public:
         }
         else if (icon == Icon::patterns)
         {
-            const float stepWidth = iconBounds.getWidth() / 7.0f;
-
-            for (int step = 0; step < 4; ++step)
-            {
-                const float height = iconBounds.getHeight()
-                                   * (0.38f + 0.16f * static_cast<float> (step % 3));
-                const float x = iconBounds.getX()
-                              + static_cast<float> (step * 2) * stepWidth;
-                g.fillRoundedRectangle (x, iconBounds.getBottom() - height,
-                                        stepWidth, height, 0.8f);
-            }
+            drawPatternIcon (g, iconBounds);
         }
         else
         {
@@ -1061,36 +1107,111 @@ public:
         }
 
         const auto iconBounds = juce::Rectangle<float> (
-            3.0f, (static_cast<float> (height) - 14.0f) * 0.5f, 14.0f, 14.0f);
+            3.0f, (static_cast<float> (height) - 14.0f) * 0.5f, 19.0f, 14.0f);
         g.setColour (directory ? juce::Colour (0xffd09c50) : juce::Colour (0xff6c7887));
 
         if (directory)
         {
-            g.fillRoundedRectangle (iconBounds, 1.5f);
-            g.fillRect (juce::Rectangle<float> (
-                5.0f, iconBounds.getY() - 2.0f, 7.0f, 4.0f));
+            constexpr float tabWidth = 7.0f;
+            constexpr float shoulderWidth = 2.0f;
+            constexpr float bodyTop = 4.0f;
+            juce::Path folder;
+            folder.startNewSubPath (iconBounds.getX(),
+                                    iconBounds.getY() + bodyTop);
+            folder.lineTo (iconBounds.getX(), iconBounds.getY() + 0.5f);
+            folder.lineTo (iconBounds.getX() + tabWidth,
+                           iconBounds.getY() + 0.5f);
+            folder.lineTo (iconBounds.getX() + tabWidth + shoulderWidth,
+                           iconBounds.getY() + bodyTop);
+            folder.lineTo (iconBounds.getRight(),
+                           iconBounds.getY() + bodyTop);
+            folder.lineTo (iconBounds.getRight(), iconBounds.getBottom());
+            folder.lineTo (iconBounds.getX(), iconBounds.getBottom());
+            folder.closeSubPath();
+            g.fillPath (folder);
+
+            g.setColour (juce::Colour (0xffdfaa5a));
+            g.fillRoundedRectangle (
+                iconBounds.getX(), iconBounds.getY() + 5.5f,
+                iconBounds.getWidth(), iconBounds.getHeight() - 5.5f,
+                1.3f);
         }
         else
         {
-            const float middle = iconBounds.getCentreY();
-            juce::Path wave;
-            wave.startNewSubPath (iconBounds.getX(), middle);
+            const auto centre = iconBounds.getCentre();
 
-            for (int point = 0; point < 7; ++point)
+            if (mode == SVDrummerAudioProcessor::BrowserMode::samples)
             {
-                const float px = iconBounds.getX() + static_cast<float> (point) * 2.0f;
-                const float py = middle + ((point % 2 == 0) ? -3.0f : 3.0f);
-                wave.lineTo (px, py);
-            }
+                juce::Path wave;
+                wave.startNewSubPath (iconBounds.getX(), centre.y);
 
-            g.strokePath (wave, juce::PathStrokeType (1.4f));
+                for (int point = 1; point <= 6; ++point)
+                {
+                    const float fraction = static_cast<float> (point) / 6.0f;
+                    const float x = iconBounds.getX()
+                                  + iconBounds.getWidth() * fraction;
+                    const float y = centre.y
+                                  + (point % 2 == 0 ? -1.0f : 1.0f)
+                                        * iconBounds.getHeight() * 0.30f;
+                    wave.lineTo (x, y);
+                }
+
+                g.strokePath (wave, juce::PathStrokeType (
+                    1.4f, juce::PathStrokeType::curved,
+                    juce::PathStrokeType::rounded));
+            }
+            else if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
+            {
+                const float cell = juce::jmin (iconBounds.getWidth(),
+                                               iconBounds.getHeight()) * 0.32f;
+                constexpr float gap = 2.0f;
+                const auto grid = juce::Rectangle<float> (
+                    cell * 2.0f + gap, cell * 2.0f + gap)
+                                      .withCentre (centre);
+
+                for (int row = 0; row < 2; ++row)
+                    for (int column = 0; column < 2; ++column)
+                        g.drawRoundedRectangle (
+                            grid.getX()
+                                + static_cast<float> (column) * (cell + gap),
+                            grid.getY()
+                                + static_cast<float> (row) * (cell + gap),
+                            cell, cell, 0.9f, 1.3f);
+            }
+            else if (mode == SVDrummerAudioProcessor::BrowserMode::patterns)
+            {
+                drawPatternIcon (g, iconBounds);
+            }
+            else
+            {
+                auto document = iconBounds.reduced (3.0f, 0.5f);
+                constexpr float fold = 3.5f;
+                juce::Path page;
+                page.startNewSubPath (document.getX(), document.getY());
+                page.lineTo (document.getRight() - fold, document.getY());
+                page.lineTo (document.getRight(), document.getY() + fold);
+                page.lineTo (document.getRight(), document.getBottom());
+                page.lineTo (document.getX(), document.getBottom());
+                page.closeSubPath();
+                g.strokePath (page, juce::PathStrokeType (1.4f));
+                g.drawLine (document.getRight() - fold, document.getY(),
+                            document.getRight() - fold,
+                            document.getY() + fold, 1.1f);
+                g.drawLine (document.getRight() - fold,
+                            document.getY() + fold,
+                            document.getRight(), document.getY() + fold, 1.1f);
+                g.drawHorizontalLine (
+                    juce::roundToInt (centre.y + 2.0f),
+                    document.getX() + 2.5f,
+                    document.getRight() - 2.5f);
+            }
         }
 
         g.setColour (colour);
         g.setFont (juce::FontOptions (directory ? 12.5f : 12.0f,
                                      directory ? juce::Font::bold
                                                : juce::Font::plain));
-        g.drawText (file.getFileName(), 23, 0, width - 25, height,
+        g.drawText (file.getFileName(), 27, 0, width - 29, height,
                     juce::Justification::centredLeft, true);
     }
 
@@ -1587,7 +1708,7 @@ public:
         refreshButton.setBounds (titleRow.removeFromRight (28).reduced (1));
         area.removeFromTop (4);
 
-        auto modeRow = area.removeFromTop (27);
+        auto modeRow = area.removeFromTop (31);
         const int tabWidth = modeRow.getWidth() / 4;
         samplesButton.setBounds (modeRow.removeFromLeft (tabWidth).reduced (1));
         kitsButton.setBounds (modeRow.removeFromLeft (tabWidth).reduced (1));
@@ -1595,13 +1716,13 @@ public:
         projectsButton.setBounds (modeRow.reduced (1));
 
         area.removeFromTop (6);
-        auto tools = area.removeFromTop (26);
+        auto tools = area.removeFromTop (29);
 
         const auto layoutToolButtons = [] (
             juce::Rectangle<int> row,
             std::initializer_list<juce::Button*> buttons)
         {
-            constexpr int buttonWidth = 34;
+            constexpr int buttonWidth = 38;
             constexpr int gap = 9;
             const int count = static_cast<int> (buttons.size());
             const int totalWidth = count * buttonWidth + (count - 1) * gap;

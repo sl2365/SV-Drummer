@@ -1,4 +1,4 @@
-# SV-Drummer v0.13.4
+# SV-Drummer v1.14.2
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -165,6 +165,43 @@ Version 0.13.4 restores the two centred NUDGE chevrons to their original neutral
 grey and moves the selected-pad colour to the two button borders. Their borders
 continue to brighten on hover and press while following the selected lane.
 
+Version 0.13.5 redraws Browser folders with wider, conventional file-manager
+proportions while retaining a compact tab. The Open Folder toolbar icon now
+uses the same familiar left-tab orientation instead of the reversed silhouette.
+
+Version 0.13.6 increases the height of both Browser-tree and Open Folder button
+icons slightly, retaining their wider bodies and compact left-side tabs.
+
+Version 0.13.7 gives Browser files an icon appropriate to their active library
+tab. Samples retain the waveform, Kits use the four-pad grid, Patterns and
+Pattern Sets use sequencer steps, and Projects use the folded-page document.
+Folder icons remain consistent across every tab.
+
+Version 0.13.8 increases the Browser-tab height from 27 to 31 pixels and scales
+their icons from 22 x 16 to 25 x 18 pixels. Each tab's toolbar buttons increase
+proportionally from 34 x 26 to 38 x 29 pixels, giving their icons more room
+without changing the button aspect ratio or spacing style.
+
+Version 0.13.9 constrains the Save and Save As floppy-disk artwork to a centred
+square inside the wider Browser buttons. The Save As badge now uses the same
+restrained green as SNAP while retaining its existing light plus symbol.
+
+Version 0.13.10 enlarges the green Save As badge from 9 to 11 pixels and scales
+up its light plus symbol proportionally, without altering the floppy disk.
+
+Version 0.14.0 replaces the vertical mixer-like Pattern symbols in both the
+Browser tab and its files with a four-lane horizontal step pattern. Short,
+thick rounded dashes are staggered across five positions so the icon reads as a
+sideways sequencer while retaining the visual weight of the previous design.
+
+Version 0.14.1 lengthens every Pattern-icon step horizontally while retaining
+its original height and corner treatment, so the marks read as dashes without
+making the icon thinner or lighter.
+
+Version 1.14.2 promotes SV-Drummer to its version-1 release numbering. The
+build metadata, displayed GUI version and saved-state version marker now all
+use the same `1.14.2` value; subsequent releases continue from this series.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -183,7 +220,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `0.13.4`
+- Version: `1.14.2`
 
 ## Current features
 
