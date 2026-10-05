@@ -1,6 +1,6 @@
 # SV-Drummer
 
-[![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=purple)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
+[![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=E170D4)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
 [![Release Date](https://img.shields.io/github/release-date/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=yellow)](https://github.com/sl2365/SV-Drummer/releases)
 
 [![Latest Asset Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/latest/SV-Drummer.rar?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-latest&displayAssetName=false&color=blue)](https://github.com/sl2365/SV-Drummer/releases/latest)
