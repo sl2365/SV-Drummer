@@ -1,4 +1,4 @@
-# SV-Drummer v1.14.4
+# SV-Drummer v1.14.5
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -218,6 +218,10 @@ empty and hides `Export Pattern as MIDI` when a Pattern contains no steps.
 their Pattern-slot numbers in filenames while omitting empty slots. The main
 README now documents all three MIDI export workflows.
 
+Version 1.14.5 widens the Sequencer lane headers by eight pixels so longer
+triplet Division labels such as `1/16T` and `1/32T` are always shown in full
+alongside their lane-length values.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -236,7 +240,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.14.4`
+- Version: `1.14.5`
 
 ## Current features
 

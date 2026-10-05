@@ -8164,7 +8164,7 @@ private:
     juce::Rectangle<int> padTuneValueBounds;
     int selectedLane = 0;
     int visibleBars = 1;
-    int laneLabelWidth = 96;
+    int laneLabelWidth = 104;
     int gestureLane = -1;
     int gestureVelocity = 0;
     int lastGestureVisibleStep = -1;
