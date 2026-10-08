@@ -1004,6 +1004,59 @@ private:
     int lastWheelDirection = 0;
 };
 
+class SVDrummerBarScroll final : public juce::ScrollBar,
+                                 private juce::ScrollBar::Listener
+{
+public:
+    SVDrummerBarScroll() : juce::ScrollBar (false)
+    {
+        addListener (this);
+    }
+
+    ~SVDrummerBarScroll() override
+    {
+        removeListener (this);
+    }
+
+    void mouseWheelMove (const juce::MouseEvent&,
+                         const juce::MouseWheelDetails& wheel) override
+    {
+        float movement = std::abs (wheel.deltaX) > std::abs (wheel.deltaY)
+                           ? wheel.deltaX : wheel.deltaY;
+
+        if (movement == 0.0f)
+            return;
+
+        if (wheel.isReversed)
+            movement = -movement;
+
+        const int direction = movement < 0.0f ? 1 : -1;
+        const double now = juce::Time::getMillisecondCounterHiRes();
+
+        if (direction == lastWheelDirection
+            && now - lastWheelStepMilliseconds < 90.0)
+        {
+            return;
+        }
+
+        lastWheelDirection = direction;
+        lastWheelStepMilliseconds = now;
+        moveScrollbarInSteps (direction, juce::sendNotificationSync);
+    }
+
+    std::function<void()> onPositionChanged;
+
+private:
+    void scrollBarMoved (juce::ScrollBar*, double) override
+    {
+        if (onPositionChanged != nullptr)
+            onPositionChanged();
+    }
+
+    double lastWheelStepMilliseconds = -1000.0;
+    int lastWheelDirection = 0;
+};
+
 class SampleTreeRow;
 
 class SampleTreeItem final : public juce::TreeViewItem
@@ -1014,13 +1067,15 @@ public:
                     bool topLevel,
                     SVDrummerAudioProcessor::BrowserMode browserMode,
                     std::function<void (const juce::File&)> activationCallback,
-                    std::function<void (const juce::File&)> contextMenuCallback)
+                    std::function<void (const juce::File&)> contextMenuCallback,
+                    juce::String fileNameFilter = {})
         : file (std::move (itemFile)),
           rootFolder (std::move (libraryRoot)),
           isTopLevel (topLevel),
           mode (browserMode),
           onFileActivated (std::move (activationCallback)),
-          onFileContextMenu (std::move (contextMenuCallback))
+          onFileContextMenu (std::move (contextMenuCallback)),
+          filterText (std::move (fileNameFilter))
     {
     }
 
@@ -1043,6 +1098,14 @@ public:
     {
         if (! isNowOpen || ! file.isDirectory())
             return;
+
+        if (filterText.isNotEmpty())
+        {
+            if (! filteredChildrenPopulated)
+                populateFilteredSubtree();
+
+            return;
+        }
 
         clearSubItems();
 
@@ -1076,12 +1139,76 @@ public:
         for (const auto& directory : directories)
             addSubItem (new SampleTreeItem (
                 directory, rootFolder, false, mode, onFileActivated,
-                onFileContextMenu));
+                onFileContextMenu, filterText));
 
         for (const auto& sample : samples)
             addSubItem (new SampleTreeItem (
                 sample, rootFolder, false, mode, onFileActivated,
-                onFileContextMenu));
+                onFileContextMenu, filterText));
+    }
+
+    int populateFilteredSubtree()
+    {
+        if (! file.isDirectory() || filterText.isEmpty())
+            return 0;
+
+        clearSubItems();
+        filteredChildrenPopulated = true;
+
+        juce::Array<juce::File> directories;
+        juce::Array<juce::File> files;
+
+        for (const auto& entry : juce::RangedDirectoryIterator (
+                 file, false, "*", juce::File::findFilesAndDirectories))
+        {
+            const auto child = entry.getFile();
+
+            if (entry.isHidden())
+                continue;
+
+            if (child.isDirectory())
+                directories.add (child);
+            else if (isSupportedFile (child)
+                     && child.getFileName().containsIgnoreCase (filterText))
+                files.add (child);
+        }
+
+        struct FileSorter
+        {
+            static int compareElements (const juce::File& first,
+                                        const juce::File& second)
+            {
+                return first.getFileName().compareNatural (
+                    second.getFileName());
+            }
+        } sorter;
+
+        directories.sort (sorter);
+        files.sort (sorter);
+        int matchingFiles = files.size();
+
+        for (const auto& directory : directories)
+        {
+            auto childItem = std::make_unique<SampleTreeItem> (
+                directory, rootFolder, false, mode, onFileActivated,
+                onFileContextMenu, filterText);
+            const int childMatches = childItem->populateFilteredSubtree();
+
+            if (childMatches <= 0)
+                continue;
+
+            matchingFiles += childMatches;
+            auto* item = childItem.release();
+            addSubItem (item);
+            item->setOpen (true);
+        }
+
+        for (const auto& matchingFile : files)
+            addSubItem (new SampleTreeItem (
+                matchingFile, rootFolder, false, mode, onFileActivated,
+                onFileContextMenu, filterText));
+
+        return matchingFiles;
     }
 
     void paintItem (juce::Graphics& g, int width, int height) override
@@ -1260,6 +1387,8 @@ private:
         SVDrummerAudioProcessor::BrowserMode::samples;
     std::function<void (const juce::File&)> onFileActivated;
     std::function<void (const juce::File&)> onFileContextMenu;
+    juce::String filterText;
+    bool filteredChildrenPopulated = false;
 };
 
 class SampleTreeRow final : public juce::Component
@@ -1347,9 +1476,11 @@ public:
 
     void rebuild (const juce::StringArray& folders,
                   SVDrummerAudioProcessor::BrowserMode mode,
-                  const juce::StringArray& defaultFolders = {})
+                  const juce::StringArray& defaultFolders = {},
+                  const juce::String& fileNameFilter = {})
     {
         rootItem.clearSubItems();
+        filteredFileCount = 0;
 
         struct RootFolderEntry
         {
@@ -1408,9 +1539,18 @@ public:
         sortedFolders.sort (sorter);
 
         for (const auto& entry : sortedFolders)
-            rootItem.addSubItem (new SampleTreeItem (
+        {
+            auto* item = new SampleTreeItem (
                 entry.folder, entry.folder, true, mode,
-                onFileDoubleClicked, onFileContextMenu));
+                onFileDoubleClicked, onFileContextMenu, fileNameFilter);
+            rootItem.addSubItem (item);
+
+            if (fileNameFilter.isNotEmpty())
+            {
+                filteredFileCount += item->populateFilteredSubtree();
+                item->setOpen (true);
+            }
+        }
 
         rootItem.setOpen (true);
 
@@ -1460,6 +1600,11 @@ public:
         return rootItem.getNumSubItems() > 0;
     }
 
+    int getFilteredFileCount() const noexcept
+    {
+        return filteredFileCount;
+    }
+
     void setFileDoubleClickCallback (
         std::function<void (const juce::File&)> callback)
     {
@@ -1476,9 +1621,11 @@ private:
     SampleTreeRoot rootItem;
     std::function<void (const juce::File&)> onFileDoubleClicked;
     std::function<void (const juce::File&)> onFileContextMenu;
+    int filteredFileCount = 0;
 };
 
-class SVDrummerBrowserPanel final : public juce::Component
+class SVDrummerBrowserPanel final : public juce::Component,
+                                    private juce::Timer
 {
 public:
     SVDrummerBrowserPanel (SVDrummerAudioProcessor& owner,
@@ -1616,6 +1763,44 @@ public:
             "Save the current library item under a different name or location");
         loadButton.setTooltip ("Load a library file from elsewhere on disk");
         openFolderButton.setTooltip ("Open this library folder in Explorer");
+        filterClearButton.setTooltip ("Clear browser filter");
+
+        filterEditor.setMultiLine (false);
+        filterEditor.setReturnKeyStartsNewLine (false);
+        filterEditor.setJustification (juce::Justification::centredLeft);
+        filterEditor.setTextToShowWhenEmpty (
+            "Filter filenames...", mutedTextColour.withAlpha (0.72f));
+        filterEditor.setFont (juce::FontOptions (14.0f));
+        filterEditor.setIndents (7, 0);
+        filterEditor.setColour (juce::TextEditor::backgroundColourId,
+                                raisedPanelColour.darker (0.10f));
+        filterEditor.setColour (juce::TextEditor::textColourId, textColour);
+        filterEditor.setColour (juce::CaretComponent::caretColourId,
+                                juce::Colour (0xff3c9fc1));
+        filterEditor.setColour (juce::TextEditor::outlineColourId,
+                                lineColour.brighter (0.08f));
+        filterEditor.setColour (juce::TextEditor::focusedOutlineColourId,
+                                juce::Colour (0xff3c9fc1));
+        filterEditor.setColour (juce::TextEditor::highlightColourId,
+                                juce::Colour (0xff3c9fc1).withAlpha (0.34f));
+        filterEditor.onTextChange = [this]
+        {
+            startTimer (180);
+        };
+        filterEditor.onEscapeKey = [this]
+        {
+            clearBrowserFilter();
+        };
+        filterClearButton.setColour (juce::TextButton::buttonColourId,
+                                     raisedPanelColour.darker (0.10f));
+        filterClearButton.setColour (juce::TextButton::textColourOffId,
+                                     juce::Colour (0xffed6b6b));
+        filterClearButton.getProperties().set (
+            juce::Identifier ("svDrummerBrightOutline"), true);
+        filterClearButton.onClick = [this]
+        {
+            clearBrowserFilter();
+        };
 
         addAndMakeVisible (samplesButton);
         addAndMakeVisible (kitsButton);
@@ -1629,6 +1814,8 @@ public:
         addAndMakeVisible (saveAsButton);
         addAndMakeVisible (loadButton);
         addAndMakeVisible (openFolderButton);
+        addAndMakeVisible (filterEditor);
+        addAndMakeVisible (filterClearButton);
         addAndMakeVisible (tree);
         addAndMakeVisible (emptyLabel);
         addAndMakeVisible (currentItemLabel);
@@ -1660,7 +1847,23 @@ public:
 
     ~SVDrummerBrowserPanel() override
     {
+        stopTimer();
         saveUiState();
+    }
+
+    void timerCallback() override
+    {
+        stopTimer();
+        const auto newFilter = filterEditor.getText().trim();
+
+        if (newFilter == appliedFilter)
+            return;
+
+        if (appliedFilter.isEmpty() && newFilter.isNotEmpty())
+            saveUiState();
+
+        appliedFilter = newFilter;
+        refresh (false);
     }
 
     void paint (juce::Graphics& g) override
@@ -1716,6 +1919,11 @@ public:
         projectsButton.setBounds (modeRow.reduced (1));
 
         area.removeFromTop (6);
+        auto filterRow = area.removeFromTop (27);
+        filterClearButton.setBounds (filterRow.removeFromRight (27));
+        filterRow.removeFromRight (5);
+        filterEditor.setBounds (filterRow);
+        area.removeFromTop (6);
         auto tools = area.removeFromTop (29);
 
         const auto layoutToolButtons = [] (
@@ -1766,13 +1974,17 @@ public:
     {
         std::unique_ptr<juce::XmlElement> treeState;
 
-        if (preserveCurrentTreeState && tree.hasItems())
-            treeState = tree.getOpennessState (true);
-        else
-            treeState = juce::XmlDocument::parse (
-                processor.getEditorBrowserTreeState (mode));
+        if (appliedFilter.isEmpty())
+        {
+            if (preserveCurrentTreeState && tree.hasItems())
+                treeState = tree.getOpennessState (true);
+            else
+                treeState = juce::XmlDocument::parse (
+                    processor.getEditorBrowserTreeState (mode));
+        }
 
         juce::StringArray folders;
+        bool hasUnfilteredItems = false;
 
         if (mode == SVDrummerAudioProcessor::BrowserMode::samples)
         {
@@ -1780,17 +1992,17 @@ public:
             juce::StringArray defaultFolders;
             defaultFolders.add (
                 processor.getPortableSamplesDirectory().getFullPathName());
-            tree.rebuild (folders, mode, defaultFolders);
-            emptyLabel.setVisible (folders.isEmpty());
+            tree.rebuild (folders, mode, defaultFolders, appliedFilter);
+            hasUnfilteredItems = ! folders.isEmpty();
         }
         else if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
         {
             const auto kitDirectory = processor.getPortableKitsDirectory();
             kitDirectory.createDirectory();
             folders.add (kitDirectory.getFullPathName());
-            tree.rebuild (folders, mode, folders);
-            emptyLabel.setVisible (kitDirectory.findChildFiles (
-                juce::File::findFiles, true, "*.svkit").isEmpty());
+            tree.rebuild (folders, mode, folders, appliedFilter);
+            hasUnfilteredItems = ! kitDirectory.findChildFiles (
+                juce::File::findFiles, true, "*.svkit").isEmpty();
         }
         else if (mode == SVDrummerAudioProcessor::BrowserMode::patterns)
         {
@@ -1802,24 +2014,36 @@ public:
             patternSetsDirectory.createDirectory();
             folders.add (patternsDirectory.getFullPathName());
             folders.add (patternSetsDirectory.getFullPathName());
-            tree.rebuild (folders, mode, folders);
-            const bool hasPatternFiles = ! patternsDirectory.findChildFiles (
+            tree.rebuild (folders, mode, folders, appliedFilter);
+            hasUnfilteredItems = ! patternsDirectory.findChildFiles (
                 juce::File::findFiles, true, "*.svpattern").isEmpty()
                 || ! patternSetsDirectory.findChildFiles (
                     juce::File::findFiles, true, "*.svpatternset").isEmpty();
-            emptyLabel.setVisible (! hasPatternFiles);
         }
         else
         {
             const auto projectsDirectory = processor.getPortableProjectsDirectory();
             projectsDirectory.createDirectory();
             folders.add (projectsDirectory.getFullPathName());
-            tree.rebuild (folders, mode, folders);
-            emptyLabel.setVisible (projectsDirectory.findChildFiles (
-                juce::File::findFiles, true, "*.svproject").isEmpty());
+            tree.rebuild (folders, mode, folders, appliedFilter);
+            hasUnfilteredItems = ! projectsDirectory.findChildFiles (
+                juce::File::findFiles, true, "*.svproject").isEmpty();
         }
 
-        if (treeState != nullptr)
+        if (appliedFilter.isNotEmpty())
+        {
+            emptyLabel.setText (
+                "No filenames match:\n\n" + appliedFilter,
+                juce::dontSendNotification);
+            emptyLabel.setVisible (tree.getFilteredFileCount() == 0);
+        }
+        else
+        {
+            updateEmptyLabelText();
+            emptyLabel.setVisible (! hasUnfilteredItems);
+        }
+
+        if (appliedFilter.isEmpty() && treeState != nullptr)
             tree.restoreOpennessState (*treeState, true);
 
         refreshLoadedDisplay();
@@ -1849,7 +2073,7 @@ public:
     {
         processor.setEditorBrowserMode (mode);
 
-        if (tree.hasItems())
+        if (appliedFilter.isEmpty() && tree.hasItems())
             if (const auto state = tree.getOpennessState (true))
                 processor.setEditorBrowserTreeState (
                     mode, state->toString());
@@ -1861,6 +2085,47 @@ public:
     }
 
 private:
+    void clearBrowserFilter()
+    {
+        stopTimer();
+        filterEditor.clear();
+        appliedFilter.clear();
+        refresh (false);
+        filterEditor.grabKeyboardFocus();
+    }
+
+    void updateEmptyLabelText()
+    {
+        if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
+        {
+            emptyLabel.setText (
+                "Saved kits appear here.\n\n"
+                "Use Save to create a kit, then drag it onto any pad to load it.",
+                juce::dontSendNotification);
+        }
+        else if (mode == SVDrummerAudioProcessor::BrowserMode::patterns)
+        {
+            emptyLabel.setText (
+                "Saved Patterns and Pattern Sets appear here.\n\n"
+                "Drag either file type onto any pattern slot.",
+                juce::dontSendNotification);
+        }
+        else if (mode == SVDrummerAudioProcessor::BrowserMode::projects)
+        {
+            emptyLabel.setText (
+                "Saved Projects appear here.\n\n"
+                "Double-click a Project to load it.",
+                juce::dontSendNotification);
+        }
+        else
+        {
+            emptyLabel.setText (
+                "Add one or more sample folders.\n\n"
+                "Drag supported samples from this tree onto a pad.",
+                juce::dontSendNotification);
+        }
+    }
+
     void previewSample (const juce::File& file)
     {
         const auto result = processor.previewSampleFile (file);
@@ -2097,30 +2362,7 @@ private:
         refreshSaveState();
         refreshLoadedDisplay();
 
-        if (mode == SVDrummerAudioProcessor::BrowserMode::kits)
-        {
-            emptyLabel.setText ("Saved kits appear here.\n\n"
-                                "Use Save to create a kit, then drag it onto any pad to load it.",
-                                juce::dontSendNotification);
-        }
-        else if (mode == SVDrummerAudioProcessor::BrowserMode::patterns)
-        {
-            emptyLabel.setText ("Saved Patterns and Pattern Sets appear here.\n\n"
-                                "Drag either file type onto any pattern slot.",
-                                juce::dontSendNotification);
-        }
-        else if (mode == SVDrummerAudioProcessor::BrowserMode::projects)
-        {
-            emptyLabel.setText ("Saved Projects appear here.\n\n"
-                                "Double-click a Project to load it.",
-                                juce::dontSendNotification);
-        }
-        else
-        {
-            emptyLabel.setText ("Add one or more sample folders.\n\n"
-                                "Drag supported samples from this tree onto a pad.",
-                                juce::dontSendNotification);
-        }
+        updateEmptyLabelText();
 
         resized();
         refresh (false);
@@ -2435,6 +2677,8 @@ private:
         "Load library item", SVDrummerIconButton::Icon::load };
     SVDrummerIconButton openFolderButton {
         "Open library folder", SVDrummerIconButton::Icon::openFolder };
+    juce::TextEditor filterEditor;
+    juce::TextButton filterClearButton { "X" };
     SampleBrowserTree tree;
     juce::Label emptyLabel;
     juce::Label currentItemLabel;
@@ -2443,6 +2687,7 @@ private:
     std::unique_ptr<juce::FileChooser> folderChooser;
     SVDrummerAudioProcessor::BrowserMode mode =
         SVDrummerAudioProcessor::BrowserMode::samples;
+    juce::String appliedFilter;
     bool initialised = false;
 };
 
@@ -6502,8 +6747,7 @@ public:
         : processor (owner),
           onPatternLibraryChanged (std::move (patternLibraryChanged)),
           onLaneSelectionChanged (std::move (laneSelectionChanged)),
-          onLoadCompleted (std::move (loadCompletedCallback)),
-          barScroll (false)
+          onLoadCompleted (std::move (loadCompletedCallback))
     {
         enableButton.onClick = [this]
         {
@@ -6754,6 +6998,7 @@ public:
                              juce::Colour (0xff3c9fc1));
         barScroll.setColour (juce::ScrollBar::trackColourId,
                              raisedPanelColour.darker (0.28f));
+        barScroll.onPositionChanged = [this] { repaint(); };
 
         addAndMakeVisible (enableButton);
         addAndMakeVisible (midiModeLabel);
@@ -7082,6 +7327,28 @@ public:
     void mouseWheelMove (const juce::MouseEvent& event,
                          const juce::MouseWheelDetails& wheel) override
     {
+        if (wheel.deltaX != 0.0f
+            && sequenceRowsBounds.contains (event.getPosition()))
+        {
+            float movement = wheel.deltaX;
+
+            if (wheel.isReversed)
+                movement = -movement;
+
+            const int direction = movement < 0.0f ? 1 : -1;
+            const double now = juce::Time::getMillisecondCounterHiRes();
+
+            if (direction != lastHorizontalWheelDirection
+                || now - lastHorizontalWheelStepMilliseconds >= 90.0)
+            {
+                lastHorizontalWheelDirection = direction;
+                lastHorizontalWheelStepMilliseconds = now;
+                nudgeVisibleBar (direction);
+            }
+
+            return;
+        }
+
         if (wheel.deltaY != 0.0f
             && laneButton.getBounds().contains (event.getPosition()))
         {
@@ -7726,6 +7993,23 @@ private:
                                    shown, juce::dontSendNotification);
     }
 
+    void nudgeVisibleBar (int direction)
+    {
+        const int totalBars = getTotalBars();
+        const int shownBars = getBarsShown();
+
+        if (totalBars <= shownBars || direction == 0)
+            return;
+
+        const int maximumStart = totalBars - shownBars;
+        const int currentStart = juce::roundToInt (
+            barScroll.getCurrentRangeStart());
+        const int newStart = juce::jlimit (
+            0, maximumStart, currentStart + (direction > 0 ? 1 : -1));
+        barScroll.setCurrentRangeStart (
+            static_cast<double> (newStart), juce::sendNotificationSync);
+    }
+
     int getBarsShown() const
     {
         return juce::jmin (visibleBars, getTotalBars());
@@ -8140,7 +8424,7 @@ private:
     SVDrummerLedButton patternChainEnableButton {
         "Pattern chain on or off"
     };
-    juce::ScrollBar barScroll;
+    SVDrummerBarScroll barScroll;
     std::unique_ptr<juce::FileChooser> patternSetSaveChooser;
     std::unique_ptr<juce::FileChooser> patternSetLoadChooser;
     std::unique_ptr<juce::FileChooser> laneMidiExportChooser;
@@ -8170,10 +8454,12 @@ private:
     int lastGestureVisibleStep = -1;
     int lastDrawVelocity = 100;
     double resetLength = 1.0;
+    double lastHorizontalWheelStepMilliseconds = -1000.0;
     std::uint64_t resetValuesRevision =
         (std::numeric_limits<std::uint64_t>::max)();
     bool stepGestureActive = false;
     bool updatingControls = false;
+    int lastHorizontalWheelDirection = 0;
 };
 
 SVDrummerAudioProcessorEditor::SVDrummerAudioProcessorEditor (

@@ -1,6 +1,6 @@
 # SV-Drummer
 
-[![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=E170D4)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
+[![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=purple)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
 [![Release Date](https://img.shields.io/github/release-date/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=yellow)](https://github.com/sl2365/SV-Drummer/releases)
 
 [![Latest Asset Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/latest/SV-Drummer.rar?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-latest&displayAssetName=false&color=blue)](https://github.com/sl2365/SV-Drummer/releases/latest)
@@ -44,6 +44,7 @@ and match sounds and rhythms.
   Reverb Send.
 - MAIN stereo output and sixteen optional stereo AUX outputs.
 - Portable Kits, Patterns, Pattern Sets, Projects and settings.
+- Case-insensitive filename filtering shared across every Browser tab.
 - Resizable interface from 75% to 200%, remembered between sessions.
 
 ## Installation
@@ -92,6 +93,13 @@ settings to continue working.
 ## Browser
 
 The Browser contains four icon tabs:
+
+The **Filter filenames** box remains visible when switching tabs. Type any part
+of a filename to show only matching Samples, Kits, Patterns, Pattern Sets or
+Projects in the active tab. Matching files are found recursively and their
+folder branches open automatically. Click the red **X**, clear the box manually,
+or press Escape while it is focused to restore the complete tree and its
+previous folder state.
 
 ### Samples
 
@@ -224,6 +232,9 @@ route any bus to a mixer track or hardware output pair.
 
 - **Length** sets the Pattern length from 1 to 16 bars.
 - **View** displays 1, 2 or 4 bars at once.
+- When the Pattern is longer than the current View, scroll over the horizontal
+  scrollbar to move one bar at a time. Tilting a compatible mouse wheel left or
+  right over the sequencer grid moves to the previous or next bar.
 - Select a pad, lane or **LANE #** to edit that lane's controls.
 - **DIV** sets the selected lane's timing division.
 - **LOOP** sets how many lane steps repeat independently inside the Pattern.

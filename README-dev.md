@@ -1,4 +1,4 @@
-# SV-Drummer v1.14.5
+# SV-Drummer v1.14.7
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -222,6 +222,19 @@ Version 1.14.5 widens the Sequencer lane headers by eight pixels so longer
 triplet Division labels such as `1/16T` and `1/32T` are always shown in full
 alongside their lane-length values.
 
+Version 1.14.6 adds bar-by-bar Sequencer navigation. A normal mouse wheel over
+the horizontal Sequencer scrollbar moves one bar left or right, and tilting a
+compatible wheel over the sequencer grid moves to the previous or next bar.
+Navigation is active whenever the Pattern contains more bars than the current
+View. The Browser now has one persistent filename-filter field shared by all
+four tabs. Filtering is case-insensitive, searches supported files recursively,
+opens only folder branches containing matches, and leaves each tab's normal
+folder openness state intact when the filter is cleared.
+
+Version 1.14.7 improves the Browser filter field with larger, vertically
+centred, left-aligned text and a dedicated red X button that clears the filter
+immediately while keeping keyboard focus in the field.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -240,7 +253,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.14.5`
+- Version: `1.14.7`
 
 ## Current features
 
