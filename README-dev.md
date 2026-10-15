@@ -1,4 +1,4 @@
-# SV-Drummer v1.14.7
+# SV-Drummer v1.15.1
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -235,6 +235,16 @@ Version 1.14.7 improves the Browser filter field with larger, vertically
 centred, left-aligned text and a dedicated red X button that clears the filter
 immediately while keeping keyboard focus in the field.
 
+Version 1.15.0 upgrades the project and portable Windows build workflow from
+JUCE 8.0.15 to JUCE 9.0.4. The expected framework location is now
+`_Projects\_Tools\JUCE\_9.0.4`, while the plug-in identity and existing saved
+state format remain unchanged.
+
+Version 1.15.1 fixes the first JUCE 9 build after upgrading an existing project.
+The build script now detects a build folder without the matching JUCE 9.0.4
+marker and removes its stale CMake and `juceaide` caches before configuring.
+Later JUCE 9.0.4 builds retain their normal incremental CMake cache.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -253,7 +263,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.14.7`
+- Version: `1.15.1`
 
 ## Current features
 

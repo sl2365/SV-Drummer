@@ -368,7 +368,7 @@ and all sixteen AUX outputs.
 - Windows x64.
 - Visual Studio Community 2026 with the **Desktop development with C++**
   workload and x64 build tools.
-- JUCE 8.0.15.
+- JUCE 9.0.4.
 - CMake 4.4.2.
 - Windows PowerShell.
 
@@ -382,7 +382,7 @@ _Projects/
         bin/
           cmake.exe
     JUCE/
-      _8.0.15/
+      _9.0.4/
         CMakeLists.txt
   SV-Drummer/
     - Build.bat

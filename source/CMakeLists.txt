@@ -1,18 +1,18 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(SVDrummer VERSION 1.14.7 LANGUAGES C CXX)
+project(SVDrummer VERSION 1.15.1 LANGUAGES C CXX)
 
-set(JUCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../_Tools/JUCE/_8.0.15")
+set(JUCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../_Tools/JUCE/_9.0.4")
 
 if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
-        "JUCE 8.0.15 was not found. Expected: ${JUCE_DIR}/CMakeLists.txt")
+        "JUCE 9.0.4 was not found. Expected: ${JUCE_DIR}/CMakeLists.txt")
 endif()
 
 add_subdirectory("${JUCE_DIR}" "${CMAKE_BINARY_DIR}/JUCE")
 
 juce_add_plugin(SVDrummer
-    VERSION 1.14.7
+    VERSION 1.15.1
     COMPANY_NAME "sl23"
     BUNDLE_ID "com.sl23.svdrummer"
     IS_SYNTH TRUE

@@ -25,13 +25,14 @@ set "BUILD_DIR=%PROJECT_ROOT%build"
 set "DIST_DIR=%PROJECT_ROOT%dist"
 set "DATA_DIR=%DIST_DIR%\Data"
 set "CMAKE_EXE=%PROJECT_ROOT%..\_Tools\cmake\_4.4.2\bin\cmake.exe"
-set "JUCE_CMAKE=%PROJECT_ROOT%..\_Tools\JUCE\_8.0.15\CMakeLists.txt"
+set "JUCE_CMAKE=%PROJECT_ROOT%..\_Tools\JUCE\_9.0.4\CMakeLists.txt"
+set "JUCE_CACHE_MARKER=%BUILD_DIR%\.juce-9.0.4"
 set "BUNDLE_BINARY=%BUILD_DIR%\SVDrummer_artefacts\Release\VST3\SV-Drummer.vst3\Contents\x86_64-win\SV-Drummer.vst3"
 set "FINAL_PLUGIN=%DIST_DIR%\SV-Drummer.vst3"
 
 echo.
-echo SV-Drummer 64-bit VST3 - Stage 6.0 Build
-echo ========================================
+echo SV-Drummer 64-bit VST3 - v1.15.1 Build
+echo =======================================
 echo.
 
 echo Closing PolyHostInterface.exe if it is running...
@@ -60,8 +61,16 @@ echo       PASS
 echo.
 echo [2/5] Configuring Visual Studio Community 2026 x64...
 
+if exist "%BUILD_DIR%\CMakeCache.txt" if not exist "%JUCE_CACHE_MARKER%" (
+    echo       Removing cached build files from the previous JUCE version...
+    rmdir /s /q "%BUILD_DIR%"
+    if exist "%BUILD_DIR%" goto :cache_cleanup_failed
+)
+
 "%CMAKE_EXE%" -S "%SOURCE_DIR%" -B "%BUILD_DIR%" -G "Visual Studio 18 2026" -A x64
 if errorlevel 1 goto :configure_failed
+
+> "%JUCE_CACHE_MARKER%" echo 9.0.4
 
 echo       PASS
 echo.
@@ -141,7 +150,7 @@ goto :failed
 :missing_juce
 echo.
 echo BUILD FAILED
-echo   - FAIL: JUCE 8.0.15 was not found
+echo   - FAIL: JUCE 9.0.4 was not found
 echo.
 echo Expected:
 echo   %JUCE_CMAKE%
@@ -167,6 +176,16 @@ echo.
 echo BUILD FAILED
 echo   - PASS: Required tools and source files found
 echo   - FAIL: CMake could not configure Visual Studio Community 2026 x64
+goto :failed
+
+:cache_cleanup_failed
+echo.
+echo BUILD FAILED
+echo   - PASS: Required tools and source files found
+echo   - FAIL: The stale CMake build cache could not be removed
+echo.
+echo Close any programs using files inside:
+echo   %BUILD_DIR%
 goto :failed
 
 :build_failed
