@@ -215,8 +215,10 @@ The amber LED enables or bypasses both controls.
 ### Output
 
 Every pad defaults to **MAIN**. Select **AUX 1** through **AUX 16** to send that
-pad's dry signal to an optional stereo output instead. AUX buses must be enabled
-or connected in the host before they can be heard.
+pad's dry signal to a stereo output instead. All AUX buses are active by default
+and must be connected to a destination in the host before they can be heard.
+Selecting an AUX output bypasses Drummer's global Delay and Reverb sends while
+retaining the pad envelope, filter, compressor, saturation, volume, pan and tune.
 
 When a host presents every enabled output as one flat channel list:
 
@@ -341,8 +343,9 @@ Reverb includes Size, Damping, Width, Duck and Mix.
 
 The sixteen mixer strips mirror the pads. Each strip provides Volume, Pan,
 Output, Mute, Solo, Delay Send and Reverb Send. Sends are post-fader and
-post-pan. Global Delay and Reverb returns remain on MAIN, including when a pad's
-dry signal is routed to an AUX output.
+post-pan. Global Delay and Reverb returns remain on MAIN. When a pad is assigned
+to an AUX output, its Delay and Reverb sends are bypassed so that AUX remains a
+dry external-processing route.
 
 The top-right **Volume** control is the global master level and applies to MAIN
 and all sixteen AUX outputs.

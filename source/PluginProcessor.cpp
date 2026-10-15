@@ -284,7 +284,7 @@ SVDrummerAudioProcessor::SVDrummerAudioProcessor()
 
           for (int output = 1; output <= numberOfPadOutputBuses; ++output)
               buses.addBus (false, "AUX " + juce::String (output),
-                            juce::AudioChannelSet::stereo(), false);
+                            juce::AudioChannelSet::stereo(), true);
 
           return buses;
       }())
@@ -2119,26 +2119,33 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         processPadCompressor (padIndex, padRenderBuffer);
         processPadSaturation (padIndex, padRenderBuffer);
 
+        const int outputBus = juce::jlimit (
+            0, numberOfPadOutputBuses, pad.outputBus.load());
+
         const float delaySend = juce::jlimit (
             0.0f, 1.0f, pad.delaySend.load());
         const float reverbSend = juce::jlimit (
             0.0f, 1.0f, pad.reverbSend.load());
 
-        for (int channel = 0; channel < padRenderBuffer.getNumChannels(); ++channel)
+        // Global FX are MAIN-bus sends. AUX-routed pads leave their selected
+        // output dry so they can be processed and mixed externally.
+        if (outputBus == 0)
         {
-            if (delaySend > 0.0f)
-                delaySendBuffer.addFrom (
-                    channel, 0, padRenderBuffer, channel, 0,
-                    buffer.getNumSamples(), delaySend);
+            for (int channel = 0;
+                 channel < padRenderBuffer.getNumChannels(); ++channel)
+            {
+                if (delaySend > 0.0f)
+                    delaySendBuffer.addFrom (
+                        channel, 0, padRenderBuffer, channel, 0,
+                        buffer.getNumSamples(), delaySend);
 
-            if (reverbSend > 0.0f)
-                reverbSendBuffer.addFrom (
-                    channel, 0, padRenderBuffer, channel, 0,
-                    buffer.getNumSamples(), reverbSend);
+                if (reverbSend > 0.0f)
+                    reverbSendBuffer.addFrom (
+                        channel, 0, padRenderBuffer, channel, 0,
+                        buffer.getNumSamples(), reverbSend);
+            }
         }
 
-        const int outputBus = juce::jlimit (
-            0, numberOfPadOutputBuses, pad.outputBus.load());
         auto destination = getBusBuffer (buffer, false, outputBus);
         const int channelsToCopy = juce::jmin (
             destination.getNumChannels(), padRenderBuffer.getNumChannels());
@@ -2149,7 +2156,7 @@ void SVDrummerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // The global effects act as independent stereo aux returns on MAIN.
-    // Per-pad routing remains dry, while every pad may feed either return.
+    // MAIN-routed pads may feed either return; AUX outputs remain dry.
     processGlobalDelay (delaySendBuffer);
     processGlobalReverb (reverbSendBuffer);
 
@@ -8520,7 +8527,7 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "1.15.1");
+    state.setAttribute ("version", "1.15.2");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     {

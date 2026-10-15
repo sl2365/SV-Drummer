@@ -1,4 +1,4 @@
-# SV-Drummer v1.15.1
+# SV-Drummer v1.15.2
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -245,6 +245,13 @@ The build script now detects a build folder without the matching JUCE 9.0.4
 marker and removes its stale CMake and `juceaide` caches before configuring.
 Later JUCE 9.0.4 builds retain their normal incremental CMake cache.
 
+Version 1.15.2 fixes multi-output routing. All sixteen stereo AUX buses are now
+active by default so hosts such as PHI receive their dry signals immediately.
+Pads assigned to an AUX bus bypass the global Delay and Reverb sends, preventing
+wet MAIN returns from masking an inactive or incorrectly connected AUX route.
+Pad-level filter, compressor, saturation, envelope, volume, pan and tune remain
+part of the selected AUX signal.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -263,7 +270,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.15.1`
+- Version: `1.15.2`
 
 ## Current features
 
