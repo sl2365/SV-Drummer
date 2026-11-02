@@ -1,4 +1,4 @@
-# SV-Drummer v1.15.2
+# SV-Drummer v1.16.5
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -252,6 +252,82 @@ wet MAIN returns from masking an inactive or incorrectly connected AUX route.
 Pad-level filter, compressor, saturation, envelope, volume, pan and tune remain
 part of the selected AUX signal.
 
+Version 1.15.3 adds a Browser collapse button beside Refresh. Hiding the Browser
+expands the pads and active lower panel into the available width, while a small
+restore arrow remains at the left edge. The Browser visibility preference is
+stored in the portable settings and restored when the plug-in is reopened.
+
+Version 1.15.4 makes Browser collapse reduce the plug-in window width instead
+of enlarging the pads. The pads, Sequencer, Pad Settings and FX + Mixer panels
+retain their normal dimensions, while reopening the Browser restores the full
+editor width. The Windows build script now streams its output to the command
+window as each step happens while simultaneously writing `Results.log`.
+
+Version 1.15.5 gives each pad's Filter Resonance control a gentler response
+curve. The midpoint now produces 25% resonance and three-quarter travel
+produces approximately 56%, while full travel retains the original 100%
+maximum effect. The editor control and host automation parameter use the same
+taper.
+
+Version 1.15.6 reduces the Resonance softening introduced in 1.15.5. The new
+smooth response curve produces exactly 25% resonance at one-third travel, 56%
+at two-thirds travel and the unchanged 100% maximum at full clockwise travel.
+The editor and host automation continue to use the same mapping. Resonance
+retains its 1% value steps, but the first step is now positioned close to 1%
+of the knob's visible travel instead of jumping across roughly 10% of it.
+
+Version 1.15.7 restores the originally requested Resonance response points:
+25% at halfway, approximately 56% at three-quarter travel and the unchanged
+100% maximum at full clockwise travel. Its first 1% step still moves naturally
+instead of jumping across the ring. Rotary controls no longer draw a coloured
+arc-end dot when their value is exactly at the fill origin.
+
+Version 1.15.8 adds moderate fixed output compensation to Filter Drive, SAT
+and HARD CLIP. Increasing these controls now emphasises their distortion and
+tonal character without producing the same distracting rise in perceived
+loudness. SAT and HARD CLIP share a combined compensation curve, preventing
+excessive double attenuation when both controls are used together. Their
+maximum drive and clipping character are unchanged.
+
+Version 1.16.0 adds a compact AMP/MOD page selector to every pad. The MOD page
+uses Velocity Semitones, Velocity Cents and Velocity Cutoff across its top row,
+with Random Semitones, Random Cents and Random Cutoff directly below. Pitch
+and cutoff values are chosen independently for every triggered voice and are
+stored with Kits, Projects and host state. Hosts supporting JUCE/VST3 custom
+MIDI note names can now display each assigned pad's loaded sample name in
+their piano-roll or drum editor without changing the SV-Drummer sequencer.
+
+Version 1.16.1 crossfades between the normal pad filter and the per-voice
+cutoff-modulation path over five milliseconds. Moving either bipolar Cutoff
+depth through its centre zero position no longer hard-switches the processing
+path or produces a click. The Browser file-icon drawing coordinate was also
+renamed to remove the MSVC C4458 member-hiding warning.
+
+Version 1.16.2 moves the per-pad CHOKE control to the spare lower-right slot
+on the MOD page. Its former AMP-page position now contains a second bipolar
+CURVE control beneath Release. The original CURVE continues to shape Attack;
+the new control shapes Release and both use the same aqua styling, subtle
+visual guides and live waveform-envelope display. Release Curve is per-pad Kit
+data and is included in Projects, host state, pad copy/paste and automation.
+
+Version 1.16.3 changes the Attack/Release CURVE guide lines to the exact same
+grey and opacity used by the Pad Settings section separators, and rounds both
+corners of each guide.
+
+Version 1.16.4 doubles the maximum shaping exponent of both AMP CURVE controls
+from 4 to 8. Their bipolar -1.00 to +1.00 display range is unchanged, while
+the stronger concave and convex extremes provide more useful shaping for short
+drum and percussion envelopes. The waveform display uses the same stronger
+curve as the audio engine.
+
+Version 1.16.5 applies the AMP Release stage to the natural tail of every
+non-looping one-shot. The engine now begins Release during the final configured
+Release-time portion of the sample, matching the envelope drawn over the
+waveform. If Attack and Decay occupy more of a short sample, the remaining tail
+is used so those stages are preserved and Release still reaches zero at the
+sample end. Looped samples and early note-off/gated releases retain their
+existing behaviour.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -270,7 +346,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.15.2`
+- Version: `1.16.5`
 
 ## Current features
 
@@ -282,12 +358,16 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Numbered pad circles act as global selectors and selection indicators.
 - MIDI notes 36–51 by default; click or mouse-wheel the note field to change it.
 - Mouse and MIDI pad triggering with MIDI velocity.
+- Custom host note names expose loaded sample names to compatible DAW
+  piano-roll and drum editors.
 - Per-pad mute, solo, volume, pan, tune and reverse controls.
 - Mouse-wheel pad Volume adjustment with a four-pixel level bar inside the
   right side of every pad; the existing Volume knobs remain available.
 - MAIN stereo output plus sixteen optional stereo pad outputs. Every pad defaults
   to MAIN and has a visible OUTPUT selector in the Pad Settings title row.
 - Per-pad amplitude envelope with Attack, Decay, Sustain and Release.
+- Switchable AMP/MOD control page with per-pad Velocity and Random depths for
+  Pitch Semitones, Pitch Cents and Filter Cutoff.
 - Switchable per-pad multimode filter with LPF, BPF, HPF, Notch, Comb, Formant
   and Ladder modes, plus resonance and drive. Filter type and 6/12/24/48 dB
   slope are selected from scrollable drop-downs.

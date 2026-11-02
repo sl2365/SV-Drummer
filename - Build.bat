@@ -4,11 +4,12 @@ setlocal EnableExtensions
 if /i "%~1"=="--run-build" goto :run_build
 
 set "RESULTS_LOG=%~dp0Results.log"
+set "BUILD_SCRIPT=%~f0"
 
-call "%~f0" --run-build > "%RESULTS_LOG%" 2>&1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+  "& { & $env:BUILD_SCRIPT '--run-build' 2>&1 | Tee-Object -FilePath $env:RESULTS_LOG; exit $LASTEXITCODE }"
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 
-type "%RESULTS_LOG%"
 echo.
 echo Results saved:
 echo   %RESULTS_LOG%
@@ -31,7 +32,7 @@ set "BUNDLE_BINARY=%BUILD_DIR%\SVDrummer_artefacts\Release\VST3\SV-Drummer.vst3\
 set "FINAL_PLUGIN=%DIST_DIR%\SV-Drummer.vst3"
 
 echo.
-echo SV-Drummer 64-bit VST3 - v1.15.2 Build
+echo SV-Drummer 64-bit VST3 - v1.16.5 Build
 echo =======================================
 echo.
 

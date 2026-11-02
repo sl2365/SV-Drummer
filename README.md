@@ -1,13 +1,13 @@
 # SV-Drummer
 
-<div align="center">
-
 [![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=purple)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
 [![Release Date](https://img.shields.io/github/release-date/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=yellow)](https://github.com/sl2365/SV-Drummer/releases)
+
 [![Latest Asset Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/latest/SV-Drummer.rar?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-latest&displayAssetName=false&color=blue)](https://github.com/sl2365/SV-Drummer/releases/latest)
 [![Total Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/total?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-total&color=blue)](https://github.com/sl2365/SV-Drummer/releases)
 
-</div>
+[![Commits Since Release](https://img.shields.io/github/commits-since/sl2365/SV-Drummer/latest?style=for-the-badge-square&logo=github&logoColor=white&color=green)](https://github.com/sl2365/SV-Drummer/activity)
+[![Last Commit](https://img.shields.io/github/last-commit/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=green)](https://github.com/sl2365/SV-Drummer/activity)
 
 SV-Drummer is a portable Windows x64 VST3 drum sampler, pattern sequencer and
 mixer. It combines sixteen sample pads, detailed per-pad sound shaping, a
@@ -31,7 +31,10 @@ and match sounds and rhythms.
 - Non-destructive waveform editing with Start, End, Loop Start and Loop End
   markers, zero-crossing Snap, Reverse and Normal/Ping-Pong looping.
 - Per-pad ADSR amplitude envelope with adjustable attack curve.
-- Per-pad multimode Filter, Compressor, Saturation and Hard Clip processing.
+- Per-pad Velocity and Random modulation for pitch (separate semitone and cent
+  depths) and Filter Cutoff.
+- Per-pad multimode Filter with a tapered Resonance response, plus Compressor,
+  Saturation and Hard Clip processing.
 - Sixteen-lane step sequencer with per-lane Division, Loop length, velocity,
   Trigger/Gated playback, Nudge, Copy, Paste, Random, Clear and Undo.
 - Sixteen Pattern slots plus a Pattern-chain lane for arranging complete
@@ -44,6 +47,10 @@ and match sounds and rhythms.
   Reverb Send.
 - MAIN stereo output and sixteen optional stereo AUX outputs.
 - Portable Kits, Patterns, Pattern Sets, Projects and settings.
+- Host-reported pad sample names for compatible DAW piano-roll and drum
+  editors.
+- Collapsible Browser that reduces the plug-in width while preserving the
+  normal pad and Sequencer dimensions, with a persistent show/hide preference.
 - Case-insensitive filename filtering shared across every Browser tab.
 - Resizable interface from 75% to 200%, remembered between sessions.
 
@@ -192,15 +199,29 @@ The selected pad's waveform and settings are shown in this tab.
 ### AMP
 
 Attack, Decay, Sustain and Release shape the actual sample volume. The envelope
-is shown over the waveform. Curve changes the Attack shape; Pan, Tune and Choke
-are stored independently for each pad.
+is shown over the waveform. The two CURVE controls beneath Attack and Release
+provide strong bipolar shaping for their corresponding envelope stages and are
+linked by subtle guide lines. Pan and Tune are stored independently for each
+pad. For non-looping one-shots, Release shapes the natural sample tail; looped
+and gated sounds enter Release when their note or gate ends.
+
+Use the blue **AMP/MOD** selector LEDs in the section heading to switch to the
+advanced modulation page. The top row maps Velocity to Semitones, Cents and
+Filter Cutoff; the bottom row provides the same three depths for per-hit
+Random modulation. CHOKE occupies the spare lower-right position on this page.
+Semitone and Cent controls are bipolar pitch depths, while Cutoff is bipolar
+over a four-octave range. Random values are selected once per hit and retained
+for that voice rather than changing during playback. These settings are saved
+as part of the Kit and Project. Cutoff modulation is crossfaded at its centre
+zero position so live adjustments do not click.
 
 ### Filter
 
 The Filter section provides Cutoff, Resonance, Drive, Type, Slope and a separate
 low-cut HPF. Available types are LPF, BPF, HPF, Notch, Comb, Formant and Ladder,
 with 6, 12, 24 and 48 dB slopes. The amber LED bypasses the complete Filter
-section, including Drive and HPF.
+section, including Drive and HPF. Drive uses moderate output compensation so
+stronger settings add colour without an excessive rise in perceived loudness.
 
 ### Compressor
 
@@ -210,7 +231,8 @@ Release and output Gain. Use its amber LED to enable or bypass it.
 ### Saturation
 
 Sat provides soft saturation and Hard Clip provides variable-threshold clipping.
-The amber LED enables or bypasses both controls.
+Both use a shared output-compensation curve so combining them does not apply
+excessive attenuation. The amber LED enables or bypasses both controls.
 
 ### Output
 
