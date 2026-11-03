@@ -1,13 +1,14 @@
 # SV-Drummer
 
+<div align="center">
+
 [![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=purple)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
 [![Release Date](https://img.shields.io/github/release-date/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=yellow)](https://github.com/sl2365/SV-Drummer/releases)
 
 [![Latest Asset Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/latest/SV-Drummer.rar?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-latest&displayAssetName=false&color=blue)](https://github.com/sl2365/SV-Drummer/releases/latest)
 [![Total Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/total?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-total&color=blue)](https://github.com/sl2365/SV-Drummer/releases)
 
-[![Commits Since Release](https://img.shields.io/github/commits-since/sl2365/SV-Drummer/latest?style=for-the-badge-square&logo=github&logoColor=white&color=green)](https://github.com/sl2365/SV-Drummer/activity)
-[![Last Commit](https://img.shields.io/github/last-commit/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=green)](https://github.com/sl2365/SV-Drummer/activity)
+</div>
 
 SV-Drummer is a portable Windows x64 VST3 drum sampler, pattern sequencer and
 mixer. It combines sixteen sample pads, detailed per-pad sound shaping, a
@@ -37,6 +38,8 @@ and match sounds and rhythms.
   Saturation and Hard Clip processing.
 - Sixteen-lane step sequencer with per-lane Division, Loop length, velocity,
   Trigger/Gated playback, Nudge, Copy, Paste, Random, Clear and Undo.
+- Global 0-100% Swing with straight timing at 0% and a pronounced 5:1 feel at 100%,
+  and unchanged triplet divisions and Pattern-chain timing.
 - Sixteen Pattern slots plus a Pattern-chain lane for arranging complete
   Patterns into longer performances.
 - MIDI export for individual Sequence lanes, complete Patterns or every
@@ -206,14 +209,16 @@ pad. For non-looping one-shots, Release shapes the natural sample tail; looped
 and gated sounds enter Release when their note or gate ends.
 
 Use the blue **AMP/MOD** selector LEDs in the section heading to switch to the
-advanced modulation page. The top row maps Velocity to Semitones, Cents and
-Filter Cutoff; the bottom row provides the same three depths for per-hit
-Random modulation. CHOKE occupies the spare lower-right position on this page.
-Semitone and Cent controls are bipolar pitch depths, while Cutoff is bipolar
-over a four-octave range. Random values are selected once per hit and retained
-for that voice rather than changing during playback. These settings are saved
-as part of the Kit and Project. Cutoff modulation is crossfaded at its centre
-zero position so live adjustments do not click.
+advanced modulation page. The MOD settings are for introducing a more human
+feel to your drum patterns, adding variations in pitch and tone. The top row
+maps Velocity to Semitones, Cents and Filter Cutoff; the bottom row provides
+the same three depths for per-hit Random modulation. CHOKE occupies the spare
+lower-right position on this page. Semitone and Cent controls are bipolar pitch
+depths, while Cutoff is bipolar over a four-octave range. Random values are
+selected once per hit and retained for that voice rather than changing during
+playback. These settings are saved as part of the Kit and Project. Cutoff
+modulation is crossfaded at its centre zero position so live adjustments do not
+click.
 
 ### Filter
 

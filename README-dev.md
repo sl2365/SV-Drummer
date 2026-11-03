@@ -1,4 +1,4 @@
-# SV-Drummer v1.16.5
+# SV-Drummer v1.17.1
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -328,6 +328,19 @@ is used so those stages are preserved and Release still reaches zero at the
 sample end. Looped samples and early note-off/gated releases retain their
 existing behaviour.
 
+Version 1.17.0 adds a saved, automatable global SWING knob to the top header.
+Its 0-100% range delays alternate steps of binary lane divisions from straight
+timing toward a 2:1 long/short feel, without changing Pattern duration,
+downbeats, triplet divisions or the Pattern-chain lane. Master Volume now
+regenerates its formatted text on startup and host refresh, always showing the
+complete dB unit (including `-INF dB`) with the same label and bold value fonts
+as Pad Settings controls.
+
+Version 1.17.1 doubles the available Swing displacement without changing the
+0-100% control range. The maximum setting now reaches a pronounced 5:1
+long/short relationship, while 0% remains straight and triplet divisions,
+downbeats, Pattern duration and Pattern-chain timing remain unchanged.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -346,7 +359,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.16.5`
+- Version: `1.17.1`
 
 ## Current features
 
@@ -402,6 +415,8 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
   Refresh button.
 - Every Browser mode has an Open Folder button for its active library location.
 - Sixteen-lane host-synchronised step sequencer with sample-accurate triggering.
+- Saved, automatable 0-100% global Swing for binary lane divisions, with
+  triplet divisions and Pattern-chain duration left unchanged.
 - Global Pattern playback lane beneath Lane 16, with sixteen Pattern-selection
   cells per bar and `OFF`/Pattern 1–16 mouse-wheel editing.
 - Saved amber Pattern-chain enable LED in the lane header; disabling the chain
