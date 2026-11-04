@@ -1,4 +1,4 @@
-# SV-Drummer v1.17.1
+# SV-Drummer v1.20.0
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -341,6 +341,38 @@ Version 1.17.1 doubles the available Swing displacement without changing the
 long/short relationship, while 0% remains straight and triplet divisions,
 downbeats, Pattern duration and Pattern-chain timing remain unchanged.
 
+Version 1.18.0 gives AMP Decay a fixed percussive curve in both the audio
+engine and waveform display. The five-second maximum remains available, while
+a 500 ms knob midpoint and five-millisecond wheel steps provide much finer
+control over short drum decays. A saved blue AUTO FOCUS LED beside the view
+tabs can now make direct MIDI notes and pad hits select their corresponding Pad
+Settings page. Sequencer-triggered hits are ignored, and Auto-focus never
+switches the currently visible Sequencer, Pad Settings or FX + Mixer tab.
+
+Version 1.19.0 replaces the fixed Decay shape with a saved, automatable bipolar
+Decay CURVE control. The improved 500 ms Decay midpoint and full five-second
+range remain unchanged, while the new curve is applied identically to the
+audio engine and waveform envelope. The ENV page now places Attack Curve,
+Decay Curve, PAN and Release Curve beneath A, D, S and R respectively. TUNE
+moves to the free top-right MOD position. The page selector label is now ENV,
+and the global focus preference is labelled PAD AUTO-FOCUS for clarity. Decay
+now moves continuously through its lowest range instead of snapping between
+zero and one millisecond; its text remains rounded to readable milliseconds.
+
+Version 1.19.1 replaces the Decay time knob's zero-slope skew with a finite-
+slope exponential mapping. Its 500 ms midpoint and five-second maximum remain
+unchanged, but 0-1 ms now occupies approximately 0.36% rather than nearly 8%
+of the knob rotation. This removes the visually inactive area while preserving
+fine control over short drum decays. PAD AUTO-FOCUS now uses the same amber LED
+colour as the Filter, Compressor and Saturation power switches.
+
+Version 1.20.0 adds an optional amber EMBED SAMPLES LED to the Kits Browser.
+When enabled, every loaded pad's original encoded audio file is stored inside
+the `.svkit`, making the Kit a single portable file that no longer depends on
+the source sample folders. With the LED disabled, Kits retain the existing
+small path-based format. Embedded audio is decoded directly from memory, and
+is retained for reliable DAW/PHI session restoration after the Kit is loaded.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -359,7 +391,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.17.1`
+- Version: `1.20.0`
 
 ## Current features
 
@@ -378,8 +410,11 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
   right side of every pad; the existing Volume knobs remain available.
 - MAIN stereo output plus sixteen optional stereo pad outputs. Every pad defaults
   to MAIN and has a visible OUTPUT selector in the Pad Settings title row.
-- Per-pad amplitude envelope with Attack, Decay, Sustain and Release.
-- Switchable AMP/MOD control page with per-pad Velocity and Random depths for
+- Per-pad amplitude envelope with Attack, Decay, Sustain and Release, plus
+  independent bipolar curves for Attack, Decay and Release.
+- Optional saved PAD AUTO-FOCUS for direct MIDI and interface pad hits without
+  automatic tab switching or sequencer-triggered selection changes.
+- Switchable ENV/MOD control page with per-pad Velocity and Random depths for
   Pitch Semitones, Pitch Cents and Filter Cutoff.
 - Switchable per-pad multimode filter with LPF, BPF, HPF, Notch, Comb, Formant
   and Ladder modes, plus resonance and drive. Filter type and 6/12/24/48 dB
@@ -434,7 +469,9 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Pattern MIDI notes support MANUAL, momentary GATE and latched HOLD modes.
 - Portable `.svpattern` files containing one Pattern button's sixteen Sequences.
 - Portable `.svpatternset` files containing the complete set of sixteen Patterns.
-- Portable `.svkit` files containing all sixteen pads and their settings.
+- Portable `.svkit` files containing all sixteen pads and their settings, with
+  an optional saved amber LED preference for embedding the original sample
+  files directly into each Kit.
 - Portable `.svproject` files containing the complete Kit and Pattern Set.
 - Browser file choosers for loading Kits and individual Patterns from anywhere
   on disk, plus a PATTERNS menu command for loading complete Pattern Sets.

@@ -31,7 +31,10 @@ and match sounds and rhythms.
 - WAV, MP3, OGG, FLAC, AIFF and AIF sample support.
 - Non-destructive waveform editing with Start, End, Loop Start and Loop End
   markers, zero-crossing Snap, Reverse and Normal/Ping-Pong looping.
-- Per-pad ADSR amplitude envelope with adjustable attack curve.
+- Per-pad ADSR amplitude envelope with adjustable bipolar Attack, Decay and
+  Release curves.
+- Optional Pad Auto-focus follows directly played pads without changing the
+  currently displayed Sequencer, Pad Settings or FX + Mixer tab.
 - Per-pad Velocity and Random modulation for pitch (separate semitone and cent
   depths) and Filter Cutoff.
 - Per-pad multimode Filter with a tapered Resonance response, plus Compressor,
@@ -49,7 +52,8 @@ and match sounds and rhythms.
 - Sixteen-channel pad mixer with Volume, Pan, Mute, Solo, Output, Delay Send and
   Reverb Send.
 - MAIN stereo output and sixteen optional stereo AUX outputs.
-- Portable Kits, Patterns, Pattern Sets, Projects and settings.
+- Portable Kits, with optional embedded sample audio, plus Patterns, Pattern
+  Sets, Projects and settings.
 - Host-reported pad sample names for compatible DAW piano-roll and drum
   editors.
 - Collapsible Browser that reduces the plug-in width while preserving the
@@ -134,6 +138,9 @@ Volume, Pan, Tune, Choke, mixer sends and output assignments.
   dialogue opens first.
 - **Save As** always asks for a new name and location.
 - **Load** browses for a `.svkit` file anywhere on disk.
+- Enable the amber **EMBED SAMPLES** LED before saving to include every loaded
+  pad's original audio inside the `.svkit`. This produces a larger but fully
+  self-contained Kit. Leave it off for the smaller path-based format.
 - A Kit can also be dragged from the Browser onto a pad to load the complete
   sixteen-pad setup.
 
@@ -202,18 +209,28 @@ The selected pad's waveform and settings are shown in this tab.
 ### AMP
 
 Attack, Decay, Sustain and Release shape the actual sample volume. The envelope
-is shown over the waveform. The two CURVE controls beneath Attack and Release
-provide strong bipolar shaping for their corresponding envelope stages and are
-linked by subtle guide lines. Pan and Tune are stored independently for each
-pad. For non-looping one-shots, Release shapes the natural sample tail; looped
-and gated sounds enter Release when their note or gate ends.
+is shown over the waveform. The three CURVE controls beneath Attack, Decay and
+Release provide strong bipolar shaping for their corresponding envelope stages
+and are linked by subtle guide lines. PAN sits below Sustain. For non-looping
+one-shots, Release shapes the natural sample tail; looped and gated sounds enter
+Release when their note or gate ends.
 
-Use the blue **AMP/MOD** selector LEDs in the section heading to switch to the
+Decay retains its full five-second range for long cymbals and sound design, but
+its 500 ms knob midpoint gives short drum decays much more physical travel. It
+moves continuously through the lowest part of the range without a zero-to-one
+millisecond step.
+
+Enable the blue **PAD AUTO-FOCUS** LED beside the view tabs to make direct MIDI
+or pad hits select the corresponding Pad Settings page. It never switches the
+visible tab and ignores sequencer-triggered hits. Disable it to retain manual
+pad selection. This preference is stored in the portable settings.
+
+Use the blue **ENV/MOD** selector LEDs in the section heading to switch to the
 advanced modulation page. The MOD settings are for introducing a more human
 feel to your drum patterns, adding variations in pitch and tone. The top row
-maps Velocity to Semitones, Cents and Filter Cutoff; the bottom row provides
-the same three depths for per-hit Random modulation. CHOKE occupies the spare
-lower-right position on this page. Semitone and Cent controls are bipolar pitch
+maps Velocity to Semitones, Cents and Filter Cutoff, with TUNE at the top right;
+the bottom row provides the same three depths for per-hit Random modulation,
+with CHOKE at the bottom right. Semitone and Cent controls are bipolar pitch
 depths, while Cutoff is bipolar over a four-octave range. Random values are
 selected once per hit and retained for that voice rather than changing during
 playback. These settings are saved as part of the Kit and Project. Cutoff
@@ -385,8 +402,9 @@ and all sixteen AUX outputs.
 - New files default to their matching folder inside `Data`.
 - The host also stores the complete running plug-in state in its own session or
   project, including unsaved working changes.
-- Kits and Projects reference sample paths rather than embedding audio. If a
-  sample has moved, SV-Drummer can search a selected folder and relink it while
+- Kits normally reference sample paths. The optional **EMBED SAMPLES** Kit LED
+  stores the original encoded audio inside a single `.svkit` instead. Path-based
+  Kits and Projects can search a selected folder and relink moved samples while
   preserving the saved pad settings.
 - Browser folders, open folders, selection, scroll position, active tab,
   selected pad and GUI scale are restored between editor sessions.
