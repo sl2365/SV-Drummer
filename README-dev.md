@@ -1,4 +1,4 @@
-# SV-Drummer v1.20.1
+# SV-Drummer v1.20.2
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -377,6 +377,12 @@ reusable. Shared source files are copied once, and unrelated samples with the
 same filename receive safe numeric suffixes. With the LED disabled, the normal
 path-based single-file Kit format is unchanged.
 
+Version 1.20.2 changes the preferred portable folder name to
+`SV-Drummer_Data`. Existing installations containing only the former `Data`
+folder continue using it without moving or converting any files. New installs
+create `SV-Drummer_Data`, and when both names exist the product-named folder is
+used consistently by the plug-in and build script.
+
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
 Save As actions for Kits, Patterns, Pattern Sets and Projects. Normal Save now
@@ -395,7 +401,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.20.1`
+- Version: `1.20.2`
 
 ## Current features
 
@@ -446,9 +452,10 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Draggable full-sample overview bar for scrolling the zoomed waveform.
 - Browser Preview button for auditioning a selected sample without loading a pad.
 - Right-click an audio file in the Browser tree to preview it immediately.
-- Portable settings under `dist\Data\Settings`.
-- Portable GUI zoom restored from `dist\Data\Settings\SV-Drummer.ini` and
-  saved when the editor closes.
+- Portable settings under `dist\SV-Drummer_Data\Settings`, with legacy
+  `dist\Data\Settings` support.
+- Portable GUI zoom restored from the active portable folder's
+  `Settings\SV-Drummer.ini` and saved when the editor closes.
 - Portable Samples, Kits, Patterns and Projects folders.
 - Icon tabs for Samples, Kits, Patterns and Projects, plus one shared Browser
   Refresh button.

@@ -24,7 +24,9 @@ set "PROJECT_ROOT=%~dp0"
 set "SOURCE_DIR=%PROJECT_ROOT%source"
 set "BUILD_DIR=%PROJECT_ROOT%build"
 set "DIST_DIR=%PROJECT_ROOT%dist"
-set "DATA_DIR=%DIST_DIR%\Data"
+set "DATA_DIR=%DIST_DIR%\SV-Drummer_Data"
+if exist "%DIST_DIR%\Data\" set "DATA_DIR=%DIST_DIR%\Data"
+if exist "%DIST_DIR%\SV-Drummer_Data\" set "DATA_DIR=%DIST_DIR%\SV-Drummer_Data"
 set "CMAKE_EXE=%PROJECT_ROOT%..\_Tools\cmake\_4.4.2\bin\cmake.exe"
 set "JUCE_CMAKE=%PROJECT_ROOT%..\_Tools\JUCE\_9.0.4\CMakeLists.txt"
 set "JUCE_CACHE_MARKER=%BUILD_DIR%\.juce-9.0.4"
@@ -32,7 +34,7 @@ set "BUNDLE_BINARY=%BUILD_DIR%\SVDrummer_artefacts\Release\VST3\SV-Drummer.vst3\
 set "FINAL_PLUGIN=%DIST_DIR%\SV-Drummer.vst3"
 
 echo.
-echo SV-Drummer 64-bit VST3 - v1.20.1 Build
+echo SV-Drummer 64-bit VST3 - v1.20.2 Build
 echo =======================================
 echo.
 
@@ -107,6 +109,7 @@ if not exist "%DATA_DIR%\Patterns" goto :data_failed
 if not exist "%DATA_DIR%\MIDI" goto :data_failed
 if not exist "%DATA_DIR%\Settings" goto :data_failed
 
+echo       Portable folder: %DATA_DIR%
 echo       PASS
 echo.
 echo [5/5] Validating x64 output...
@@ -128,13 +131,13 @@ echo   - PASS: Required tools and source files found
 echo   - PASS: Visual Studio Community 2026 x64 configured
 echo   - PASS: Release VST3 compiled
 echo   - PASS: Single-file VST3 created
-echo   - PASS: Portable Data folders preserved or created
+echo   - PASS: Portable SV-Drummer_Data/Data folders preserved or created
 echo   - PASS: Output verified as Windows x64
 echo.
 echo Output:
 echo   %FINAL_PLUGIN%
 echo.
-echo Existing user files in dist and the portable Data folder were preserved.
+echo Existing user files in dist and the active portable folder were preserved.
 echo No plug-in files were installed elsewhere.
 echo.
 exit /b 0
@@ -221,7 +224,7 @@ goto :failed
 :data_failed
 echo.
 echo BUILD FAILED
-echo   - FAIL: The portable Data folders could not be created
+echo   - FAIL: The portable SV-Drummer_Data/Data folders could not be created
 echo.
 echo Expected:
 echo   %DATA_DIR%

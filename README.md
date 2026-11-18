@@ -4,6 +4,7 @@
 
 [![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=purple)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
 [![Release Date](https://img.shields.io/github/release-date/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=yellow)](https://github.com/sl2365/SV-Drummer/releases)
+
 [![Latest Asset Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/latest/SV-Drummer.rar?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-latest&displayAssetName=false&color=blue)](https://github.com/sl2365/SV-Drummer/releases/latest)
 [![Total Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/total?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-total&color=blue)](https://github.com/sl2365/SV-Drummer/releases)
 
@@ -65,8 +66,8 @@ and match sounds and rhythms.
 SV-Drummer is supplied as a portable single-file Windows x64 VST3.
 
 1. Download and extract the latest release.
-2. Keep `SV-Drummer.vst3` and its `Data` folder together in the same writable
-   directory.
+2. Keep `SV-Drummer.vst3` and its `SV-Drummer_Data` folder together in the
+   same writable directory. Existing installations may continue using `Data`.
 3. Add that directory to your host's VST3 scan paths, if necessary.
 4. Rescan plug-ins and load **SV-Drummer** as an instrument.
 
@@ -75,7 +76,7 @@ libraries and preferences live beside the plug-in:
 
 ```text
 SV-Drummer.vst3
-Data/
+SV-Drummer_Data/
   Samples/
   Kits/
   Patterns/
@@ -88,8 +89,10 @@ Data/
 ```
 
 Some folders are created automatically the first time their feature is used.
-Do not separate the `Data` folder from the VST3 if you want portable paths and
-settings to continue working.
+`SV-Drummer_Data` is preferred for new installations, while the former `Data`
+name remains fully supported. If both folders exist beside the plug-in,
+`SV-Drummer_Data` is used. Do not separate the active folder from the VST3 if
+you want portable paths and settings to continue working.
 
 ## Quick start
 
@@ -370,7 +373,8 @@ Exports preserve each pad's assigned MIDI note, step velocity, lane Division,
 Loop length and complete Pattern length. Trigger lanes create short notes;
 Gated lanes hold each note to the end of its step. Explicit Note Off events are
 included in both cases. Files use MIDI channel 10, 960 PPQ, 4/4 and the current
-host tempo. New exports default to the portable `Data\MIDI` folder.
+host tempo. New exports default to the portable `SV-Drummer_Data\MIDI` folder
+(or `Data\MIDI` on an existing legacy installation).
 
 ## FX + Mixer
 

@@ -7629,7 +7629,21 @@ void SVDrummerAudioProcessor::setEditorBrowserTreeState (
 
 juce::File SVDrummerAudioProcessor::getPortableDataDirectory() const
 {
-    return getThisModuleFile().getParentDirectory().getChildFile ("Data");
+    const auto pluginDirectory = getThisModuleFile().getParentDirectory();
+    const auto namedDirectory = pluginDirectory.getChildFile (
+        "SV-Drummer_Data");
+    const auto legacyDirectory = pluginDirectory.getChildFile ("Data");
+
+    // Prefer the product-named folder when both exist. Existing installations
+    // that only have the legacy Data folder continue using it without moving
+    // or converting any user files.
+    if (namedDirectory.isDirectory())
+        return namedDirectory;
+
+    if (legacyDirectory.isDirectory())
+        return legacyDirectory;
+
+    return namedDirectory;
 }
 
 juce::File SVDrummerAudioProcessor::getPortableSamplesDirectory() const
@@ -9566,7 +9580,7 @@ juce::Result SVDrummerAudioProcessor::savePortableSettings()
     juce::StringArray lines;
     lines.add ("; SV-Drummer portable settings");
     lines.add ("; Musical session data is stored by the host or in SV-Drummer library files.");
-    lines.add ("; Paths under the portable Data folder are stored relative to the plug-in.");
+    lines.add ("; Paths under the active portable SV-Drummer_Data or Data folder are stored relative to the plug-in.");
     lines.add (juce::String());
     lines.add ("[GUI]");
     lines.add ("ZoomPercent=" + juce::String (getEditorZoomPercent()));
@@ -9595,7 +9609,7 @@ juce::Result SVDrummerAudioProcessor::savePortableSettings()
     if (! settingsFile.replaceWithText (
             lines.joinIntoString ("\r\n") + "\r\n", false, false))
         return juce::Result::fail (
-            "Data\\Settings\\SV-Drummer.ini could not be written.");
+            settingsFile.getFullPathName() + " could not be written.");
 
     return juce::Result::ok();
 }
@@ -9675,7 +9689,7 @@ void SVDrummerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     captureCurrentPattern();
     juce::XmlElement state ("SVDRUMMER_STATE");
-    state.setAttribute ("version", "1.20.1");
+    state.setAttribute ("version", "1.20.2");
     state.setAttribute ("markerSnap", isSampleMarkerSnapEnabled());
 
     {
