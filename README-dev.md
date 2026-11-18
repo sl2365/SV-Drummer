@@ -1,4 +1,4 @@
-# SV-Drummer v1.20.0
+# SV-Drummer v1.20.1
 
 Native Windows x64 VST3 drum sample player and host-synchronised sequencer.
 
@@ -367,11 +367,15 @@ fine control over short drum decays. PAD AUTO-FOCUS now uses the same amber LED
 colour as the Filter, Compressor and Saturation power switches.
 
 Version 1.20.0 adds an optional amber EMBED SAMPLES LED to the Kits Browser.
-When enabled, every loaded pad's original encoded audio file is stored inside
-the `.svkit`, making the Kit a single portable file that no longer depends on
-the source sample folders. With the LED disabled, Kits retain the existing
-small path-based format. Embedded audio is decoded directly from memory, and
-is retained for reliable DAW/PHI session restoration after the Kit is loaded.
+
+Version 1.20.1 changes that option to create a collected Kit folder rather than
+encoding audio inside the `.svkit`. Saving `MyKit1` creates
+`Kits\MyKit1\MyKit1.svkit` and copies the original WAV, FLAC, AIFF, OGG or MP3
+files into the same folder. The Kit stores folder-relative sample references,
+so the complete folder can be moved while the copied audio remains directly
+reusable. Shared source files are copied once, and unrelated samples with the
+same filename receive safe numeric suffixes. With the LED disabled, the normal
+path-based single-file Kit format is unchanged.
 
 Version 0.9.12 makes the sequencer LANE indicator mouse-wheel selectable,
 brightens the relevant idle button borders and hover states, and adds distinct
@@ -391,7 +395,7 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Manufacturer code: `sl23`
 - Plug-in code: `svd1`
 - Bundle ID: `com.sl23.svdrummer`
-- Version: `1.20.0`
+- Version: `1.20.1`
 
 ## Current features
 
@@ -470,8 +474,8 @@ lanes and every non-soloed lane are darkened whenever Solo is active.
 - Portable `.svpattern` files containing one Pattern button's sixteen Sequences.
 - Portable `.svpatternset` files containing the complete set of sixteen Patterns.
 - Portable `.svkit` files containing all sixteen pads and their settings, with
-  an optional saved amber LED preference for embedding the original sample
-  files directly into each Kit.
+  an optional saved amber LED preference for collecting reusable copies of the
+  original sample files into a dedicated folder beside each Kit.
 - Portable `.svproject` files containing the complete Kit and Pattern Set.
 - Browser file choosers for loading Kits and individual Patterns from anywhere
   on disk, plus a PATTERNS menu command for loading complete Pattern Sets.

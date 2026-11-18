@@ -4,7 +4,6 @@
 
 [![Release](https://img.shields.io/github/v/release/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=purple)](https://github.com/sl2365/SV-Drummer/releases/latest/download/SV-Drummer.rar)
 [![Release Date](https://img.shields.io/github/release-date/sl2365/SV-Drummer?style=for-the-badge-square&logo=github&logoColor=white&color=yellow)](https://github.com/sl2365/SV-Drummer/releases)
-
 [![Latest Asset Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/latest/SV-Drummer.rar?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-latest&displayAssetName=false&color=blue)](https://github.com/sl2365/SV-Drummer/releases/latest)
 [![Total Downloads](https://img.shields.io/github/downloads/sl2365/SV-Drummer/total?style=for-the-badge-square&logo=github&logoColor=white&label=downloads-total&color=blue)](https://github.com/sl2365/SV-Drummer/releases)
 
@@ -52,8 +51,8 @@ and match sounds and rhythms.
 - Sixteen-channel pad mixer with Volume, Pan, Mute, Solo, Output, Delay Send and
   Reverb Send.
 - MAIN stereo output and sixteen optional stereo AUX outputs.
-- Portable Kits, with optional embedded sample audio, plus Patterns, Pattern
-  Sets, Projects and settings.
+- Portable Kits, with optional collected copies of their sample files, plus
+  Patterns, Pattern Sets, Projects and settings.
 - Host-reported pad sample names for compatible DAW piano-roll and drum
   editors.
 - Collapsible Browser that reduces the plug-in width while preserving the
@@ -138,9 +137,11 @@ Volume, Pan, Tune, Choke, mixer sends and output assignments.
   dialogue opens first.
 - **Save As** always asks for a new name and location.
 - **Load** browses for a `.svkit` file anywhere on disk.
-- Enable the amber **EMBED SAMPLES** LED before saving to include every loaded
-  pad's original audio inside the `.svkit`. This produces a larger but fully
-  self-contained Kit. Leave it off for the smaller path-based format.
+- Enable the amber **EMBED SAMPLES** LED before saving to collect every loaded
+  pad's original audio file into a dedicated folder with the Kit. For example,
+  saving `MyKit1` creates `Kits\MyKit1\MyKit1.svkit` plus reusable copies of
+  its WAV, FLAC, AIFF, OGG or MP3 files in `Kits\MyKit1`. Leave the LED off to
+  save the normal path-based `.svkit` without copying samples.
 - A Kit can also be dragged from the Browser onto a pad to load the complete
   sixteen-pad setup.
 
@@ -403,9 +404,11 @@ and all sixteen AUX outputs.
 - The host also stores the complete running plug-in state in its own session or
   project, including unsaved working changes.
 - Kits normally reference sample paths. The optional **EMBED SAMPLES** Kit LED
-  stores the original encoded audio inside a single `.svkit` instead. Path-based
-  Kits and Projects can search a selected folder and relink moved samples while
-  preserving the saved pad settings.
+  instead creates a uniquely named Kit folder and copies the original reusable
+  sample files beside the `.svkit`. Collected Kits use folder-relative paths,
+  so the complete folder can be moved as one unit. Path-based Kits and Projects
+  can search a selected folder and relink moved samples while preserving the
+  saved pad settings.
 - Browser folders, open folders, selection, scroll position, active tab,
   selected pad and GUI scale are restored between editor sessions.
 
